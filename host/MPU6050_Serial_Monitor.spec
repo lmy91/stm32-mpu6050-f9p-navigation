@@ -1,13 +1,28 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+import sys
 
 HOST_DIR = Path(SPECPATH)
+CONDA_BIN = Path(sys.base_prefix) / 'Library' / 'bin'
+CONDA_RUNTIME_DLLS = (
+    'ffi.dll',
+    'libexpat.dll',
+    'libssl-3-x64.dll',
+    'libcrypto-3-x64.dll',
+    'liblzma.dll',
+    'libbz2.dll',
+)
+EXTRA_BINARIES = [
+    (str(CONDA_BIN / name), '.')
+    for name in CONDA_RUNTIME_DLLS
+    if (CONDA_BIN / name).is_file()
+]
 
 a = Analysis(
     [str(HOST_DIR / 'imu_serial_qt.py')],
     pathex=[],
-    binaries=[],
+    binaries=EXTRA_BINARIES,
     datas=[],
     hiddenimports=[],
     hookspath=[],
