@@ -179,8 +179,6 @@ def main() -> None:
     parser.add_argument("--save", nargs="*", choices=LOG_TYPES,
                         default=list(LOG_TYPES), metavar="TYPE",
                         help="CSV types to save: imu gnss rawx; default: all")
-    parser.add_argument("--raw-output", type=pathlib.Path,
-                        help="Optional file containing the complete unmodified serial stream")
     args = parser.parse_args()
 
     selected = set(args.save)
@@ -191,9 +189,6 @@ def main() -> None:
         "gnss": session_dir / "gnss.csv" if session_dir and "gnss" in selected else None,
         "rawx": session_dir / "rawx.csv" if session_dir and "rawx" in selected else None,
     }
-    if args.raw_output is not None:
-        args.raw_output.parent.mkdir(parents=True, exist_ok=True)
-
     deadline = time.monotonic() + args.hours * 3600.0 if args.hours > 0 else None
     imu_rows = gnss_rows = rawx_rows = sat_rows = invalid = lost = 0
     rawx_epoch = None; rawx_seen_header = False
@@ -206,8 +201,6 @@ def main() -> None:
                         ("RAWX CSV", "rawx")):
         path = paths[kind]
         print(f"{label} -> {path.resolve() if path else 'disabled'}")
-    if args.raw_output:
-        print(f"Raw stream -> {args.raw_output.resolve()}")
     print("Press Ctrl+C to stop safely.")
 
     with contextlib.ExitStack() as stack:
@@ -220,8 +213,6 @@ def main() -> None:
             stream = stack.enter_context(path.open("w", encoding="utf-8", newline=""))
             writer = csv.writer(stream, lineterminator="\n")
             writer.writerow(columns[kind]); streams[kind] = stream; writers[kind] = writer
-        raw_stream = (stack.enter_context(args.raw_output.open("w", encoding="ascii", newline=""))
-                      if args.raw_output else None)
         rows_since_flush = 0
         port.reset_input_buffer()
         # Discard the first fragment because opening a continuous stream can
@@ -236,8 +227,6 @@ def main() -> None:
                     line = serial_bytes.decode("ascii").strip()
                 except UnicodeDecodeError:
                     invalid += 1; continue
-                if raw_stream is not None:
-                    raw_stream.write(line + "\n")
                 if not line or line.startswith("#"):
                     continue
                 parts = line.split(",")
@@ -286,7 +275,6 @@ def main() -> None:
                     rows_since_flush += 1
                 if rows_since_flush >= 100:
                     for stream in streams.values(): stream.flush()
-                    if raw_stream is not None: raw_stream.flush()
                     rows_since_flush = 0
                 if imu_rows and imu_rows % 500 == 0:
                     elapsed = time.monotonic() - started
@@ -296,7 +284,6 @@ def main() -> None:
             pass
         finally:
             for stream in streams.values(): stream.flush()
-            if raw_stream is not None: raw_stream.flush()
 
     elapsed = time.monotonic() - started
     print(f"\nSaved IMU {imu_rows:,}, GNSS {gnss_rows:,}, RAWX {rawx_rows:,}, satellite records {sat_rows:,} "

@@ -20,8 +20,6 @@ venv/
 mx.scratch/
 
 # Large recordings and generated analysis products
-/data/raw/*
-!/data/raw/.gitkeep
 /data/decoded/*
 !/data/decoded/.gitkeep
 /data/allan_results/*

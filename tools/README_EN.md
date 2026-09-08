@@ -37,11 +37,7 @@ Save only selected types:
 
 Any combination of `imu`, `gnss`, and `rawx` is accepted; all three are enabled by default. Runs started within the same second receive an `_01` suffix and never overwrite existing data.
 
-Optionally retain the complete STM32 stream:
-
-    D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 1 --raw-output data\raw\serial_1h.txt
-
-The capture tool reports lost IMU frames, invalid lines, and satellite records. `SAT`/`SAT_END` records are retained only in the optional raw stream rather than duplicated into the GNSS navigation table.
+The capture tool reports lost IMU frames, invalid lines, and satellite records. `SAT`/`SAT_END` records are counted but not duplicated into the GNSS navigation table.
 
 ## 2. Allan noise identification
 

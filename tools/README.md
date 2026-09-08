@@ -8,7 +8,7 @@
 
 | 文件 | 用途 | 默认输出 |
 | --- | --- | --- |
-| `capture_serial.py` | 无界面采集当前完整串口流 | 会话文件夹中的 IMU、GNSS导航、RAWX CSV |
+| `capture_serial.py` | 无界面采集 | 会话文件夹中的 IMU、GNSS导航、RAWX CSV |
 | `allan_noise_identification.py` | 直接读取标准 IMU CSV，辨识 Allan 随机误差 | `data/allan_results/` |
 
 ## 安装
@@ -37,11 +37,7 @@
 
 `--save imu`、`--save gnss`、`--save rawx` 可任意组合；默认三项全选。同一秒重复启动时会增加 `_01` 后缀，已有数据不会被覆盖。
 
-同时保留 STM32 的完整原始流：
-
-    D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 1 --raw-output data\raw\serial_1h.txt
-
-采集器统计IMU丢帧、无效行和卫星记录；`SAT`/`SAT_END` 只写入可选原始流，不重复写入GNSS导航表。
+采集器统计IMU丢帧、无效行和卫星记录；`SAT`/`SAT_END` 用于计数，不重复写入GNSS导航表。
 
 ## 2. Allan 随机误差辨识
 

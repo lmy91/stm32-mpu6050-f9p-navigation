@@ -590,11 +590,7 @@ D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM4 --hours 6
 ```
 
 当前 `capture_serial.py` 会在接收时直接转换并保存物理量CSV，默认文件为
-`data\decoded\YYYYMMDDHHMMSS\imu.csv`，无需离线解码。只有需要同时保留完整串口文本时才添加：
-
-```powershell
---raw-output data\raw\mpu6050_static_raw.csv
-```
+`data\decoded\YYYYMMDDHHMMSS\imu.csv`，无需离线解码。
 
 分析命令：
 
