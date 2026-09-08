@@ -15,7 +15,7 @@
 - GNSS 数据包含 WGS-84 坐标、海拔、NED/地面速度、定位类型、卫星数、PDOP
 - Qt 显示 IMU 曲线、速度曲线、本地轨迹/高德地图和多星座天空图
 - Qt 与命令行工具均分别保存 IMU/GNSS CSV
-- 离线解码及 Allan 方差工具兼容当前 21 列 IMU v2 文件
+- 离线解码及Allan方差工具读取当前21列IMU v3文件
 
 ## 硬件与接线
 
@@ -68,7 +68,7 @@ D:\anaconda\envs\allan-toolkit\python.exe host\imu_serial_qt.py
 
 选择 PA9 USB-TTL 对应端口（当前设备为 CH340 COM7）和 460800。勾选保存后，程序创建：
 
-- `imu_gnss_time_*.csv`：21 列 IMU v2，含 GPS 时间、本地捕获时间、原始值和物理量
+- `imu_gnss_time_*.csv`：21列IMU v3，含GPS时间、本地捕获时间、原始值和物理量
 - `gnss_nav_*.csv`：GNSS 时间、WGS-84 位置、速度、PDOP、定位类型和卫星数
 
 高德地图使用 Web JS API Key 和 `securityJsCode`。密钥只保存在本机 Qt 设置中，不应写入仓库；没有 Key 时本地米制轨迹仍正常工作。
@@ -79,25 +79,25 @@ D:\anaconda\envs\allan-toolkit\python.exe host\imu_serial_qt.py
 # 分别保存 IMU/GNSS，0 小时表示持续到 Ctrl+C
 D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 0
 
-# 解码当前串口原始日志、当前 IMU CSV 或旧版 10 列文件
+# 解码v3串口原始日志或当前IMU CSV
 D:\anaconda\envs\allan-toolkit\python.exe tools\decode_imu_data.py data\raw\record.log
 
-# 当前 21 列 IMU v2 可直接用于 Allan 分析
+# 当前21列IMU v3可直接用于Allan分析
 D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py data\decoded\imu_gnss_time_xxx.csv --rate 100 --skip-minutes 30
 ```
 
 详细说明见 [固件](firmware/README.md)、[Qt 上位机](host/README.md)、[工具](tools/README.md)、[组合导航算法规划](fusion/README.md) 和 [Allan 方差说明](docs/Allan方差知识总结.md)。
 
-## 串口协议 v2
+## 串口协议 v3
 
 ```text
 IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
-GNSS,gps_week,gps_tow_ms,time_valid,fix,num_sv,lat_e7,lon_e7,hmsl_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,pdop_x100
+GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,hmsl_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
 SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used
 SAT_END,gps_week,gps_tow_ms,time_valid,num_svs
 ```
 
-只有 `time_valid=1` 时 GPS 时间有效。F9P 坐标按 WGS-84 保存；高德界面显示时才转换为 GCJ-02。
+只有 `time_valid=1` 时GPS时间有效。`rx_timer_us` 是NAV-PVT完整通过校验时的STM32本地接收时刻；`h_acc_mm`、`v_acc_mm`、`s_acc_mms`分别是水平位置、垂直位置和速度精度。`carr_soln` 为0/1/2时分别表示无载波解、RTK浮点解、RTK固定解。F9P坐标按WGS-84保存；高德界面显示时才转换为GCJ-02。
 
 ## 后续组合导航路线
 

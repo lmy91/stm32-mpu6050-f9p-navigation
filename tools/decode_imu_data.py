@@ -1,8 +1,8 @@
 """Decode MPU6050/F9P IMU records into the canonical physical-unit CSV.
 
-Accepted inputs are the current typed ``IMU,...`` serial stream, the current
-IMU CSV, and the legacy 10-column MPU6050 CSV. Processing is streaming so long
-recordings do not need to fit in memory.
+Accepted inputs are the protocol-v3 typed ``IMU,...`` serial stream and its
+canonical IMU CSV. Processing is streaming so long recordings do not need to
+fit in memory.
 """
 
 from __future__ import annotations
@@ -61,22 +61,11 @@ def parse_named(row: list[str], header: list[str]) -> dict[str, int] | None:
     if len(row) != len(header):
         return None
     fields = dict(zip(header, row))
-    if not {"sample", *RAW_NAMES}.issubset(fields):
+    required = {"sample", "gps_week", "gps_tow_us", "time_valid", "timer_us", *RAW_NAMES}
+    if not required.issubset(fields):
         return None
     try:
-        output = {name: int(float(fields[name])) for name in ("sample", *RAW_NAMES)}
-        if "timer_us" in fields:
-            output["timer_us"] = int(fields["timer_us"])
-        elif "time_ms" in fields:
-            output["timer_us"] = int(fields["time_ms"]) * 1000
-        else:
-            return None
-        output["gps_week"] = int(fields.get("gps_week", "0"))
-        output["gps_tow_us"] = int(fields.get("gps_tow_us", "0"))
-        output["time_valid"] = int(fields.get("time_valid", "0"))
-        if "dt_ms" in fields:
-            output["legacy_dt_us"] = int(float(fields["dt_ms"]) * 1000)
-        return output
+        return {name: int(float(fields[name])) for name in required}
     except ValueError:
         return None
 
@@ -84,8 +73,7 @@ def parse_named(row: list[str], header: list[str]) -> dict[str, int] | None:
 def decoded_row(sample: dict[str, int], first_timer_us: int,
                 previous_timer_us: int | None) -> tuple[list[int | float], list[float]]:
     timer_us = sample["timer_us"]
-    dt_s = ((timer_us - previous_timer_us) / 1e6 if previous_timer_us is not None
-            else sample.get("legacy_dt_us", 0) / 1e6)
+    dt_s = (timer_us - previous_timer_us) / 1e6 if previous_timer_us is not None else 0.0
     time_s = (timer_us - first_timer_us) / 1e6
     ax, ay, az, temp, gx, gy, gz = (sample[name] for name in RAW_NAMES)
     physical = [ax * ACCEL_SCALE, ay * ACCEL_SCALE, az * ACCEL_SCALE,

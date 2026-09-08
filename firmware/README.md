@@ -72,13 +72,13 @@ build/ 是可重建目录，不提交到 Git。
 烧录后复位。PA9 会输出四种带记录类型的 CSV 数据：
 
     IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
-    GNSS,gps_week,gps_tow_ms,time_valid,fix,num_sv,lat_e7,lon_e7,hmsl_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,pdop_x100
+    GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,hmsl_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
     SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used
     SAT_END,gps_week,gps_tow_ms,time_valid,num_svs
 
 `IMU` 以 100 Hz 输出。每个样本的 `gps_tow_us` 由同一 TIM2 时钟域内硬件捕获的 MPU6050 DATA_RDY 和 F9P 1PPS 直接换算，单位为 GPS 周内微秒；`time_valid=1` 才表示 GPS 时间有效。首次收到有效 TIM-TP/PPS 之前，GPS 周和 TOW 输出 0。
 
-`GNSS` 以 1 Hz 输出。经纬度单位为 `1e-7 deg`，高程和 NED/地面速度单位分别为 mm 和 mm/s，PDOP 的比例为 0.01。`SAT`/`SAT_END` 提供 1 Hz 天空图快照。每个 PPS 还会输出一行以 `# sync` 开头的诊断状态。
+`GNSS` 以 1 Hz 输出。`rx_timer_us` 是完整NAV-PVT帧通过校验时的STM32本地微秒时刻。经纬度单位为 `1e-7 deg`，高程与位置精度为mm，NED/地面速度与速度精度为mm/s，PDOP比例为0.01。`flags`、`flags2`保留NAV-PVT原始质量位，`carr_soln` 从 `flags[7:6]` 提取（0=无载波解，1=RTK浮点，2=RTK固定）。`SAT`/`SAT_END` 提供1 Hz天空图快照。每个PPS还会输出一行以 `# sync` 开头的诊断状态。
 
 ## 工作原理
 

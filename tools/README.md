@@ -2,14 +2,14 @@
 
 [项目主页](../README.md) | 中文 | [English](README_EN.md)
 
-工具与当前 STM32 串口协议 v2 配套。默认从 PA9/USART1 的 USB-TTL 串口以 460800 bit/s 接收数据，并将带 GPS 时间戳的 IMU 与 1 Hz GNSS 导航结果分别保存。实验数据统一写入 `data/`，默认不提交 Git。
+工具与当前STM32串口协议v3配套。默认从PA9/USART1的USB-TTL串口以460800 bit/s接收数据，并将带GPS时间戳的IMU与1 Hz GNSS导航结果分别保存。实验数据统一写入 `data/`，默认不提交Git。
 
 ## 工具
 
 | 文件 | 用途 | 默认输出 |
 | --- | --- | --- |
 | `capture_serial.py` | 无界面采集当前完整串口流 | `data/decoded/` 中独立的 IMU、GNSS CSV |
-| `decode_imu_data.py` | 解码当前/旧版 IMU 文件并画七通道图 | `data/decoded/` |
+| `decode_imu_data.py` | 解码v3 IMU文件并画七通道图 | `data/decoded/` |
 | `allan_noise_identification.py` | 直接读取标准 IMU CSV，辨识 Allan 随机误差 | `data/allan_results/` |
 
 ## 安装
@@ -39,15 +39,14 @@
 
     D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --imu-output data\decoded\imu.csv --gnss-output data\decoded\gnss.csv
 
-`--output` 是旧版 `--imu-output` 的兼容别名。采集器统计 IMU 丢帧、无效行和卫星记录；`SAT`/`SAT_END` 只写入可选原始流，不重复写入 GNSS 导航表。
+采集器统计IMU丢帧、无效行和卫星记录；`SAT`/`SAT_END` 只写入可选原始流，不重复写入GNSS导航表。
 
 ## 2. 解码 IMU 文件
 
-解码器接受三类输入：
+解码器接受两类v3输入：
 
 - 当前带类型的 `IMU,...` 原始串口日志；
-- 当前 21 列标准 IMU CSV；
-- 旧版 10 列 MPU6050 CSV。
+- 当前21列标准IMU CSV。
 
 运行：
 
@@ -70,7 +69,7 @@
 ## 当前串口协议
 
     IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
-    GNSS,gps_week,gps_tow_ms,time_valid,fix,num_sv,lat_e7,lon_e7,hmsl_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,pdop_x100
+    GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,hmsl_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
     SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used
     SAT_END,gps_week,gps_tow_ms,time_valid,num_svs
 
@@ -80,9 +79,9 @@
 
 标准 GNSS CSV：
 
-    gps_week,gps_tow_ms,time_valid,fix,num_sv,lat_deg,lon_deg,hmsl_m,vel_n_m_s,vel_e_m_s,vel_d_m_s,ground_speed_m_s,pdop
+    gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,gnss_fix_ok,diff_soln,lat_deg,lon_deg,hmsl_m,h_acc_m,v_acc_m,vel_n_m_s,vel_e_m_s,vel_d_m_s,ground_speed_m_s,s_acc_m_s,pdop
 
-`time_valid=1` 表示 GPS 时间有效；经纬度为 WGS-84。角速度以 deg/h 保存，Allan 工具内部转换为 rad/s。
+`time_valid=1` 表示GPS时间有效；经纬度为WGS-84。采集器只接受协议v3完整记录。角速度以deg/h保存，Allan工具内部转换为rad/s。
 
 ## 长时间采集建议
 

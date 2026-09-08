@@ -12,4 +12,4 @@ Recommended implementation order:
 4. Apply Allan parameters, installation-angle calibration, and antenna lever-arm compensation in a loosely coupled error-state EKF.
 5. Later add F9P raw pseudorange, Doppler, carrier phase, and RTK status interfaces for tight coupling.
 
-Fusion input should reuse [serial protocol v2](../README_EN.md#protocol-v2) and the canonical CSV outputs instead of introducing a second, inconsistent time representation.
+Fusion input should reuse [serial protocol v3](../README_EN.md#protocol-v3) and the canonical CSV outputs instead of introducing a second, inconsistent time representation.

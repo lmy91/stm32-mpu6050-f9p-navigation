@@ -39,15 +39,15 @@
 输入为 STM32 的三种带类型记录：
 
     IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
-    GNSS,gps_week,gps_tow_ms,time_valid,fix,num_sv,lat_e7,lon_e7,hmsl_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,pdop_x100
+    GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,hmsl_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
     SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used
 
 输出为两个文件：
 
 - `imu_gnss_time_时间.csv`：GPS 周/周内微秒、STM32 捕获时间、IMU 原始值及物理量。
-- `gnss_nav_时间.csv`：GPS 时间、位置、NED/地面速度、PDOP、定位类型及卫星数。
+- `gnss_nav_时间.csv`：GPS时间和接收时刻、位置/速度及精度、PDOP、定位类型、RTK状态和卫星数。
 
-`time_valid=1` 才表示 GPS 时间有效。GNSS 文件中的经纬度为 WGS-84 十进制度。
+`time_valid=1` 才表示GPS时间有效。GNSS文件中的经纬度为WGS-84十进制度。程序只解析协议v3完整记录。
 
 ## 打包 Windows EXE
 

@@ -130,6 +130,7 @@ static volatile uint16_t g_next_gps_week;
 static volatile uint32_t g_next_gps_tow_ms;
 static volatile uint32_t g_next_gps_time_valid;
 static volatile uint8_t g_gnss_rx[GNSS_RX_SIZE];
+static volatile uint32_t g_gnss_rx_time_low[GNSS_RX_SIZE];
 static volatile uint16_t g_gnss_rx_head;
 static volatile uint16_t g_gnss_rx_tail;
 static satellite_t g_satellites[MAX_SATELLITES];
@@ -158,16 +159,23 @@ volatile uint32_t g_debug_gnss_ack_count;
 volatile uint32_t g_debug_gnss_nak_count;
 volatile uint32_t g_debug_nav_pvt_count;
 volatile uint32_t g_debug_tim_tp_count;
+volatile uint64_t g_debug_nav_rx_timer_us;
 volatile uint32_t g_debug_nav_itow_ms;
 volatile uint32_t g_debug_nav_fix_type;
 volatile uint32_t g_debug_nav_num_sv;
+volatile uint32_t g_debug_nav_flags;
+volatile uint32_t g_debug_nav_flags2;
+volatile uint32_t g_debug_nav_carr_soln;
 volatile int32_t g_debug_nav_lon_e7;
 volatile int32_t g_debug_nav_lat_e7;
 volatile int32_t g_debug_nav_hmsl_mm;
+volatile uint32_t g_debug_nav_hacc_mm;
+volatile uint32_t g_debug_nav_vacc_mm;
 volatile int32_t g_debug_nav_vel_n_mms;
 volatile int32_t g_debug_nav_vel_e_mms;
 volatile int32_t g_debug_nav_vel_d_mms;
 volatile uint32_t g_debug_nav_gspeed_mms;
+volatile uint32_t g_debug_nav_sacc_mms;
 volatile uint32_t g_debug_nav_pdop_x100;
 volatile int16_t g_debug_last_raw[7];
 static uint8_t g_mpu_addr = 0x68u;
@@ -184,6 +192,31 @@ static uint64_t timer_capture_time(uint16_t capture, uint32_t status,
      * edge occurred after the wrap even if UIF is handled in the same IRQ. */
     if ((status & TIM_UIF) && capture < 0x8000u) ++high;
     return ((uint64_t)high << 16) | capture;
+}
+
+static uint64_t timer_now_unlocked(void)
+{
+    uint32_t high;
+    uint16_t low;
+    uint32_t status;
+
+    high = g_timer_overflows;
+    low = (uint16_t)TIM2_CNT;
+    status = TIM2_SR;
+
+    /* If TIM2 wrapped after reading the software high word but before reading
+     * CNT, UIF is pending and a low counter value belongs to the next epoch. */
+    if ((status & TIM_UIF) && low < 0x8000u) ++high;
+    return ((uint64_t)high << 16) | low;
+}
+
+static uint64_t timer_now_us(void)
+{
+    uint64_t now;
+    __asm volatile ("cpsid i" ::: "memory");
+    now = timer_now_unlocked();
+    __asm volatile ("cpsie i" ::: "memory");
+    return now;
 }
 
 void TIM2_IRQHandler(void)
@@ -220,6 +253,7 @@ void USART2_IRQHandler(void)
         if (next == g_gnss_rx_tail) ++g_debug_gnss_rx_overruns;
         else {
             g_gnss_rx[head] = byte;
+            g_gnss_rx_time_low[head] = (uint32_t)timer_now_unlocked();
             g_gnss_rx_head = next;
         }
     }
@@ -531,33 +565,43 @@ static void gnss_configure(void)
     delay_ms(100u);
 }
 
-static bool gnss_rx_pop(uint8_t *byte)
+static bool gnss_rx_pop(uint8_t *byte, uint32_t *rx_time_low)
 {
     uint16_t tail = g_gnss_rx_tail;
     if (tail == g_gnss_rx_head) return false;
     *byte = g_gnss_rx[tail];
+    *rx_time_low = g_gnss_rx_time_low[tail];
     g_gnss_rx_tail = (uint16_t)((tail + 1u) & (GNSS_RX_SIZE - 1u));
     return true;
 }
 
 static void gnss_dispatch(uint8_t msg_class, uint8_t msg_id,
-                          const uint8_t *payload, uint16_t length)
+                          const uint8_t *payload, uint16_t length,
+                          uint64_t rx_timer_us)
 {
     ++g_debug_gnss_messages;
     if (msg_class == 0x05u && length == 2u) {
         if (msg_id == 0x01u) ++g_debug_gnss_ack_count;
         else if (msg_id == 0x00u) ++g_debug_gnss_nak_count;
     } else if (msg_class == 0x01u && msg_id == 0x07u && length >= 92u) {
+        uint8_t flags = payload[21];
+        g_debug_nav_rx_timer_us = rx_timer_us;
         g_debug_nav_itow_ms = get_le32(&payload[0]);
         g_debug_nav_fix_type = payload[20];
+        g_debug_nav_flags = flags;
+        g_debug_nav_flags2 = payload[22];
+        g_debug_nav_carr_soln = (flags >> 6) & 0x03u;
         g_debug_nav_num_sv = payload[23];
         g_debug_nav_lon_e7 = (int32_t)get_le32(&payload[24]);
         g_debug_nav_lat_e7 = (int32_t)get_le32(&payload[28]);
         g_debug_nav_hmsl_mm = (int32_t)get_le32(&payload[36]);
+        g_debug_nav_hacc_mm = get_le32(&payload[40]);
+        g_debug_nav_vacc_mm = get_le32(&payload[44]);
         g_debug_nav_vel_n_mms = (int32_t)get_le32(&payload[48]);
         g_debug_nav_vel_e_mms = (int32_t)get_le32(&payload[52]);
         g_debug_nav_vel_d_mms = (int32_t)get_le32(&payload[56]);
         g_debug_nav_gspeed_mms = get_le32(&payload[60]);
+        g_debug_nav_sacc_mms = get_le32(&payload[68]);
         g_debug_nav_pdop_x100 = get_le16(&payload[76]);
         ++g_debug_nav_pvt_count;
     } else if (msg_class == 0x01u && msg_id == 0x35u && length >= 8u) {
@@ -609,8 +653,16 @@ static void gnss_process(void)
     static uint8_t ck_b;
     static uint8_t payload[UBX_MAX_PAYLOAD];
     uint8_t byte;
+    uint32_t rx_time_low;
+    uint64_t now = timer_now_us();
+    uint64_t rx_time_base = now & ~0xFFFFFFFFull;
 
-    while (gnss_rx_pop(&byte)) {
+    while (gnss_rx_pop(&byte, &rx_time_low)) {
+        uint64_t byte_rx_us = rx_time_base | rx_time_low;
+        /* The receive ring can hold far less than one 32-bit timer period
+         * (about 71 minutes), so a future-looking low word is from the
+         * immediately preceding period. */
+        if (byte_rx_us > now) byte_rx_us -= 0x100000000ull;
         switch (state) {
         case 0u:
             if (byte == 0xB5u) state = 1u;
@@ -638,7 +690,9 @@ static void gnss_process(void)
             else { ++g_debug_gnss_checksum_errors; state = 0u; }
             break;
         default: /* checksum B */
-            if (byte == ck_b) gnss_dispatch(msg_class, msg_id, payload, length);
+            if (byte == ck_b) {
+                gnss_dispatch(msg_class, msg_id, payload, length, byte_rx_us);
+            }
             else ++g_debug_gnss_checksum_errors;
             state = 0u;
             break;
@@ -850,7 +904,7 @@ static int16_t i16be(uint8_t high, uint8_t low)
 
 static void print_header(void)
 {
-    uart_puts("# mpu6050_f9p_navigation_protocol_v2\r\n");
+    uart_puts("# mpu6050_f9p_navigation_protocol_v3\r\n");
     uart_puts("# timer=tim2_1mhz_48bit_extended\r\n");
     uart_puts("# pps=f9p_tp_pa0_tim2_ch1_rising\r\n");
     uart_puts("# trigger=mpu6050_data_ready_pa1_tim2_ch2_rising\r\n");
@@ -867,7 +921,7 @@ static void print_header(void)
     uart_putc(g_mpu_addr == 0x68u ? '8' : '9');
     uart_puts("\r\n");
     uart_puts("# IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw\r\n");
-    uart_puts("# GNSS,gps_week,gps_tow_ms,time_valid,fix,num_sv,lat_e7,lon_e7,hmsl_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,pdop_x100\r\n");
+    uart_puts("# GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,hmsl_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100\r\n");
     uart_puts("# SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used\r\n");
 }
 
@@ -946,15 +1000,22 @@ static void print_gnss(uint16_t week, uint32_t time_valid)
     uart_puts("GNSS,"); uart_u32(week);
     uart_putc(','); uart_u32(g_debug_nav_itow_ms);
     uart_putc(','); uart_u32(time_valid);
+    uart_putc(','); uart_u64(g_debug_nav_rx_timer_us);
     uart_putc(','); uart_u32(g_debug_nav_fix_type);
     uart_putc(','); uart_u32(g_debug_nav_num_sv);
+    uart_putc(','); uart_u32(g_debug_nav_flags);
+    uart_putc(','); uart_u32(g_debug_nav_flags2);
+    uart_putc(','); uart_u32(g_debug_nav_carr_soln);
     uart_putc(','); uart_i32(g_debug_nav_lat_e7);
     uart_putc(','); uart_i32(g_debug_nav_lon_e7);
     uart_putc(','); uart_i32(g_debug_nav_hmsl_mm);
+    uart_putc(','); uart_u32(g_debug_nav_hacc_mm);
+    uart_putc(','); uart_u32(g_debug_nav_vacc_mm);
     uart_putc(','); uart_i32(g_debug_nav_vel_n_mms);
     uart_putc(','); uart_i32(g_debug_nav_vel_e_mms);
     uart_putc(','); uart_i32(g_debug_nav_vel_d_mms);
     uart_putc(','); uart_u32(g_debug_nav_gspeed_mms);
+    uart_putc(','); uart_u32(g_debug_nav_sacc_mms);
     uart_putc(','); uart_u32(g_debug_nav_pdop_x100);
     uart_puts("\r\n");
 }
@@ -1032,6 +1093,12 @@ int main(void)
      * Start TIM2 first, clear a possibly stale high level, then the following
      * PA1 rising edge is captured in hardware. */
     timer_capture_init();
+    /* Bytes received while TIM2 was still stopped have no meaningful local
+     * receive timestamp. Discard that startup fragment and resynchronize on
+     * the next complete UBX frame. */
+    __asm volatile ("cpsid i" ::: "memory");
+    g_gnss_rx_tail = g_gnss_rx_head;
+    __asm volatile ("cpsie i" ::: "memory");
     (void)mpu_read8(MPU_INT_STATUS, &status);
     __asm volatile ("cpsid i" ::: "memory");
     g_data_ready = 0u;

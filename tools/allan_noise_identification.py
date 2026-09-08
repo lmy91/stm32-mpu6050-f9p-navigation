@@ -89,7 +89,7 @@ def find_header_line(path: pathlib.Path) -> tuple[int, tuple[int, ...]]:
             if all(name in columns for name in EXPECTED_COLUMNS):
                 return line_number, tuple(columns.index(name) for name in EXPECTED_COLUMNS)
     raise ValueError(
-        "Compatible IMU CSV header not found. Required columns: " + ",".join(EXPECTED_COLUMNS)
+        "Required IMU CSV header not found. Required columns: " + ",".join(EXPECTED_COLUMNS)
     )
 
 

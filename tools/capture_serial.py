@@ -26,8 +26,10 @@ IMU_COLUMNS = [
     "ax_m_s2", "ay_m_s2", "az_m_s2", "temp_deg_c", "gx_deg_h", "gy_deg_h", "gz_deg_h",
 ]
 GNSS_COLUMNS = [
-    "gps_week", "gps_tow_ms", "time_valid", "fix", "num_sv", "lat_deg", "lon_deg",
-    "hmsl_m", "vel_n_m_s", "vel_e_m_s", "vel_d_m_s", "ground_speed_m_s", "pdop",
+    "gps_week", "gps_tow_ms", "time_valid", "rx_timer_us", "fix", "num_sv",
+    "flags", "flags2", "carr_soln", "gnss_fix_ok", "diff_soln", "lat_deg", "lon_deg",
+    "hmsl_m", "h_acc_m", "v_acc_m", "vel_n_m_s", "vel_e_m_s", "vel_d_m_s",
+    "ground_speed_m_s", "s_acc_m_s", "pdop",
 ]
 
 
@@ -58,18 +60,23 @@ def parse_imu(parts: list[str], first_timer_us: int | None,
 
 
 def parse_gnss(parts: list[str]) -> list[int | float] | None:
-    if len(parts) != 14 or parts[0] != "GNSS":
+    if len(parts) != 21 or parts[0] != "GNSS":
         return None
     try:
         values = [int(value) for value in parts[1:]]
-        (week, tow_ms, valid, fix, num_sv, lat_e7, lon_e7, hmsl_mm,
-         vel_n, vel_e, vel_d, ground, pdop_x100) = values
+        (week, tow_ms, valid, rx_timer_us, fix, num_sv, flags, flags2, carr_soln,
+         lat_e7, lon_e7, hmsl_mm, h_acc_mm, v_acc_mm, vel_n, vel_e, vel_d,
+         ground, s_acc_mms, pdop_x100) = values
     except ValueError:
         return None
+    gnss_fix_ok = flags & 0x01
+    diff_soln = (flags >> 1) & 0x01
     return [
-        week, tow_ms, valid, fix, num_sv, lat_e7 / 1e7, lon_e7 / 1e7,
-        hmsl_mm / 1000.0, vel_n / 1000.0, vel_e / 1000.0,
-        vel_d / 1000.0, ground / 1000.0, pdop_x100 / 100.0,
+        week, tow_ms, valid, rx_timer_us, fix, num_sv, flags, flags2, carr_soln,
+        gnss_fix_ok, diff_soln, lat_e7 / 1e7, lon_e7 / 1e7, hmsl_mm / 1000.0,
+        h_acc_mm / 1000.0, v_acc_mm / 1000.0,
+        vel_n / 1000.0, vel_e / 1000.0, vel_d / 1000.0,
+        ground / 1000.0, s_acc_mms / 1000.0, pdop_x100 / 100.0,
     ]
 
 
@@ -80,8 +87,7 @@ def main() -> None:
     parser.add_argument("--hours", type=float, default=0.0,
                         help="Stop after this many hours; 0 means until Ctrl+C")
     parser.add_argument("--output-dir", type=pathlib.Path, default=DATA_DIR / "decoded")
-    parser.add_argument("--imu-output", "--output", dest="imu_output", type=pathlib.Path,
-                        help="IMU CSV path; --output is retained as a compatibility alias")
+    parser.add_argument("--imu-output", type=pathlib.Path, help="IMU CSV path")
     parser.add_argument("--gnss-output", type=pathlib.Path, help="GNSS CSV path")
     parser.add_argument("--raw-output", type=pathlib.Path,
                         help="Optional file containing the complete unmodified serial stream")

@@ -15,7 +15,7 @@ The current release implements the synchronized acquisition and visualization fo
 - WGS-84 position, altitude, NED/ground speed, fix, satellite count, and PDOP
 - Qt IMU/speed plots, local/AMap track, and multi-constellation sky plot
 - Separate IMU/GNSS CSV logging from both Qt and the command-line capture tool
-- Decoder and Allan tools compatible with the canonical 21-column IMU v2 file
+- Decoder and Allan tools for the canonical 21-column IMU v3 file
 
 ## Wiring
 
@@ -59,16 +59,16 @@ D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py da
 
 See [firmware](firmware/README_EN.md), [desktop application](host/README_EN.md), [tools](tools/README_EN.md), and the [fusion roadmap](fusion/README_EN.md) for details.
 
-## Protocol v2
+## Protocol v3
 
 ```text
 IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
-GNSS,gps_week,gps_tow_ms,time_valid,fix,num_sv,lat_e7,lon_e7,hmsl_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,pdop_x100
+GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,hmsl_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
 SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used
 SAT_END,gps_week,gps_tow_ms,time_valid,num_svs
 ```
 
-GPS timestamps are usable only when `time_valid=1`. Saved positions remain WGS-84; GCJ-02 conversion is display-only for AMap.
+GPS timestamps are usable only when `time_valid=1`. `rx_timer_us` is the STM32 local time when a complete NAV-PVT frame passes checksum validation. `h_acc_mm`, `v_acc_mm`, and `s_acc_mms` are the horizontal-position, vertical-position, and speed accuracy estimates. `carr_soln` values 0/1/2 mean no carrier solution, RTK float, and RTK fixed. Saved positions remain WGS-84; GCJ-02 conversion is display-only for AMap.
 
 ## Roadmap
 

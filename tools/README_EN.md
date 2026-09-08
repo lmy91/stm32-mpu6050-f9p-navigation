@@ -2,14 +2,14 @@
 
 [Project home](../README_EN.md) | [中文](README.md) | English
 
-These tools match STM32 serial protocol v2. By default they receive the PA9/USART1 USB-TTL stream at 460800 bit/s and save GPS-timestamped IMU data separately from the 1 Hz GNSS navigation solution. Generated experiment data lives under `data/` and is excluded from Git.
+These tools match STM32 serial protocol v3. By default they receive the PA9/USART1 USB-TTL stream at 460800 bit/s and save GPS-timestamped IMU data separately from the 1 Hz GNSS navigation solution. Generated experiment data lives under `data/` and is excluded from Git.
 
 ## Tools
 
 | File | Purpose | Default output |
 | --- | --- | --- |
 | `capture_serial.py` | Headless capture of the current complete serial stream | Separate IMU and GNSS CSV files in `data/decoded/` |
-| `decode_imu_data.py` | Decode current or legacy IMU files and plot seven channels | `data/decoded/` |
+| `decode_imu_data.py` | Decode protocol-v3 IMU files and plot seven channels | `data/decoded/` |
 | `allan_noise_identification.py` | Read the canonical IMU CSV and identify Allan noise terms | `data/allan_results/` |
 
 ## Install
@@ -39,15 +39,14 @@ Custom output paths:
 
     D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --imu-output data\decoded\imu.csv --gnss-output data\decoded\gnss.csv
 
-`--output` remains as a compatibility alias for `--imu-output`. The capture tool reports lost IMU frames, invalid lines, and satellite records. `SAT`/`SAT_END` records are retained only in the optional raw stream rather than duplicated into the GNSS navigation table.
+The capture tool reports lost IMU frames, invalid lines, and satellite records. `SAT`/`SAT_END` records are retained only in the optional raw stream rather than duplicated into the GNSS navigation table.
 
 ## 2. Decode an IMU file
 
 The decoder accepts:
 
-- current typed `IMU,...` raw serial logs;
-- current 21-column canonical IMU CSV files;
-- legacy 10-column MPU6050 CSV files.
+- protocol-v3 typed `IMU,...` raw serial logs;
+- current 21-column canonical IMU CSV files.
 
 Run:
 
@@ -70,7 +69,7 @@ Canonical IMU CSV files produced by the capture tool or Qt monitor can be used d
 ## Current serial protocol
 
     IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
-    GNSS,gps_week,gps_tow_ms,time_valid,fix,num_sv,lat_e7,lon_e7,hmsl_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,pdop_x100
+    GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,hmsl_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
     SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used
     SAT_END,gps_week,gps_tow_ms,time_valid,num_svs
 
@@ -80,9 +79,9 @@ Canonical IMU CSV:
 
 Canonical GNSS CSV:
 
-    gps_week,gps_tow_ms,time_valid,fix,num_sv,lat_deg,lon_deg,hmsl_m,vel_n_m_s,vel_e_m_s,vel_d_m_s,ground_speed_m_s,pdop
+    gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,gnss_fix_ok,diff_soln,lat_deg,lon_deg,hmsl_m,h_acc_m,v_acc_m,vel_n_m_s,vel_e_m_s,vel_d_m_s,ground_speed_m_s,s_acc_m_s,pdop
 
-`time_valid=1` means GPS time is valid. Coordinates are WGS-84. Angular rates are stored in deg/h and converted to rad/s internally by the Allan tool.
+`time_valid=1` means GPS time is valid. Coordinates are WGS-84. The capture tool accepts complete protocol-v3 records only. Angular rates are stored in deg/h and converted to rad/s internally by the Allan tool.
 
 ## Recommendations
 

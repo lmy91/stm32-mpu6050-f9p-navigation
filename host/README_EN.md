@@ -37,13 +37,15 @@ Pause plots stops UI refresh only; reception and enabled recording continue. Cle
 The input consists of typed records:
 
     IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,...
-    GNSS,gps_week,gps_tow_ms,time_valid,fix,num_sv,position,velocity,pdop
+    GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,position,accuracy,velocity,speed_accuracy,pdop
     SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno,elevation,azimuth,used
 
 Logging creates two files:
 
 - `imu_gnss_time_*.csv`: GPS time, local capture time, raw IMU and physical units.
-- `gnss_nav_*.csv`: GPS time, WGS-84 position, NED/ground velocity, PDOP, fix and satellite count.
+- `gnss_nav_*.csv`: GPS time and receive time, WGS-84 position/velocity and accuracy, PDOP, fix/RTK quality, and satellite count.
+
+The monitor accepts complete protocol-v3 records only.
 
 ## Package a Windows EXE
 

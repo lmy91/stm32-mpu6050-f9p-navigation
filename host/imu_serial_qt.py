@@ -431,8 +431,10 @@ class NavigationMonitor(QtWidgets.QMainWindow):
             self.imu_writer.writerow(["sample", "gps_week", "gps_tow_us", "time_valid", "timer_us", "time_s", "dt_s",
                 "ax_raw", "ay_raw", "az_raw", "temp_raw", "gx_raw", "gy_raw", "gz_raw",
                 "ax_m_s2", "ay_m_s2", "az_m_s2", "temp_deg_c", "gx_deg_h", "gy_deg_h", "gz_deg_h"])
-            self.gnss_writer.writerow(["gps_week", "gps_tow_ms", "time_valid", "fix", "num_sv", "lat_deg", "lon_deg",
-                "hmsl_m", "vel_n_m_s", "vel_e_m_s", "vel_d_m_s", "ground_speed_m_s", "pdop"])
+            self.gnss_writer.writerow(["gps_week", "gps_tow_ms", "time_valid", "rx_timer_us", "fix", "num_sv",
+                "flags", "flags2", "carr_soln", "gnss_fix_ok", "diff_soln", "lat_deg", "lon_deg",
+                "hmsl_m", "h_acc_m", "v_acc_m", "vel_n_m_s", "vel_e_m_s", "vel_d_m_s",
+                "ground_speed_m_s", "s_acc_m_s", "pdop"])
             self.statusBar().showMessage(f"保存到 {imu_path.name} 和 {gnss_path.name}"); return True
         except OSError as error:
             self._close_logs(); QtWidgets.QMessageBox.critical(self, "文件错误", f"无法创建数据文件：\n{error}"); return False
@@ -497,7 +499,7 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         try:
             if parts[0] == "IMU" and len(parts) == 13:
                 self._process_imu([int(v) for v in parts[1:]])
-            elif parts[0] == "GNSS" and len(parts) == 14:
+            elif parts[0] == "GNSS" and len(parts) == 21:
                 self._process_gnss([int(v) for v in parts[1:]])
             elif parts[0] == "SAT" and len(parts) == 10:
                 self._process_sat([int(v) for v in parts[1:]])
@@ -534,7 +536,14 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self._trim_buffers()
 
     def _process_gnss(self, values: list[int]) -> None:
-        week, tow_ms, valid, fix, num_sv, lat_e7, lon_e7, hmsl_mm, vn, ve, vd, ground, pdop = values
+        (week, tow_ms, valid, rx_timer_us, fix, num_sv, flags, flags2, carr_soln,
+         lat_e7, lon_e7, hmsl_mm, h_acc_mm, v_acc_mm, vn, ve, vd, ground,
+         s_acc_mms, pdop) = values
+        gnss_fix_ok = flags & 0x01
+        diff_soln = (flags >> 1) & 0x01
+        h_acc_m = h_acc_mm / 1000.0
+        v_acc_m = v_acc_mm / 1000.0
+        s_acc_m_s = s_acc_mms / 1000.0
         lat, lon, height = lat_e7 / 1e7, lon_e7 / 1e7, hmsl_mm / 1000.0
         velocities = (vn / 1000.0, ve / 1000.0, vd / 1000.0, ground / 1000.0)
         absolute = week * GPS_WEEK_SECONDS + tow_ms / 1000.0
@@ -548,16 +557,25 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self.total_gnss += 1
         self.time_label.setText(f"GPS时间: W{week} {tow_ms / 1000.0:.3f}s" if valid else "GPS时间: 无效")
         fix_names = {0: "无", 1: "航位推算", 2: "2D", 3: "3D", 4: "GNSS+DR", 5: "仅时间"}
-        self.fix_label.setText(f"定位: {fix_names.get(fix, str(fix))}")
+        carrier_names = {1: "RTK浮点", 2: "RTK固定"}
+        carrier = carrier_names.get(carr_soln, "")
+        quality = f" / {carrier}" if carrier else ""
+        if gnss_fix_ok == 0: quality += " / 解无效"
+        self.fix_label.setText(f"定位: {fix_names.get(fix, str(fix))}{quality}")
         self.sv_label.setText(f"卫星数: {num_sv}"); self.pdop_label.setText(f"PDOP: {pdop / 100.0:.2f}")
         self.lat_value.setText(f"{lat:.9f}°"); self.lon_value.setText(f"{lon:.9f}°")
         self.height_value.setText(f"{height:.3f} m"); self.speed_value.setText(f"{velocities[3]:.3f} m/s")
         self.velocity_value.setText(f"N {velocities[0]:.3f}  E {velocities[1]:.3f}  D {velocities[2]:.3f} m/s")
-        if valid and fix >= 2 and abs(lat) <= 90 and abs(lon) <= 180:
+        if (valid and fix >= 2 and gnss_fix_ok != 0 and
+                abs(lat) <= 90 and abs(lon) <= 180):
             self.map_widget.set_position(lat, lon)
         if self.gnss_writer is not None:
-            self.gnss_writer.writerow([week, tow_ms, valid, fix, num_sv, lat, lon, height,
-                                       velocities[0], velocities[1], velocities[2], velocities[3], pdop / 100.0])
+            self.gnss_writer.writerow([week, tow_ms, valid,
+                                       rx_timer_us, fix, num_sv, flags, flags2,
+                                       carr_soln, gnss_fix_ok, diff_soln,
+                                       lat, lon, height, h_acc_m, v_acc_m,
+                                       velocities[0], velocities[1], velocities[2], velocities[3],
+                                       s_acc_m_s, pdop / 100.0])
             self._periodic_flush()
         self._trim_buffers()
 
