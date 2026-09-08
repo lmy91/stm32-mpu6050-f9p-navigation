@@ -1,10 +1,10 @@
 {
-  "name": "stm32_imu_test",
+  "name": "mpu6050_f9p_navigation",
   "configurations": [
     {
       "name": "Debug",
       "type": "Executable",
-      "output_filename": "stm32_imu_test",
+      "output_filename": "mpu6050_f9p_navigation",
       "mcu": "STM32F103C8T6",
       "toolchain_type": "GCC",
       "toolchain_prefix": "",
@@ -97,7 +97,7 @@
           "type": "c_linker",
           "flags": [
             "-Tstm32f103x8_flash.ld",
-            "-Wl,-Map=stm32_imu_test.map",
+            "-Wl,-Map=mpu6050_f9p_navigation.map",
             "-u",
             "_printf_float",
             "--specs=nosys.specs",
@@ -116,7 +116,7 @@
     {
       "name": "Release",
       "type": "Executable",
-      "output_filename": "stm32_imu_test",
+      "output_filename": "mpu6050_f9p_navigation",
       "mcu": "STM32F103C8T6",
       "toolchain_type": "GCC",
       "toolchain_prefix": "",
@@ -200,7 +200,7 @@
           "type": "c_linker",
           "flags": [
             "-Tstm32f103x8_flash.ld",
-            "-Wl,-Map=stm32_imu_test.map",
+            "-Wl,-Map=mpu6050_f9p_navigation.map",
             "-u",
             "_printf_float",
             "--specs=nosys.specs",

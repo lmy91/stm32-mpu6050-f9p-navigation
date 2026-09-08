@@ -134,7 +134,7 @@ target_link_options(${PROJECT_NAME} PUBLIC
     # Linker flags specific to Debug build type
     $<$<CONFIG:Debug>: 
         -T${CMAKE_CURRENT_BINARY_DIR}/stm32f103x8_flash.ld
-        -Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/stm32_imu_test.map
+        -Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/mpu6050_f9p_navigation.map
         -u
         _printf_float
         --specs=nosys.specs
@@ -151,7 +151,7 @@ target_link_options(${PROJECT_NAME} PUBLIC
     # Linker flags specific to Release build type
     $<$<CONFIG:Release>: 
         -T${CMAKE_CURRENT_BINARY_DIR}/stm32f103x8_flash.ld
-        -Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/stm32_imu_test.map
+        -Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/mpu6050_f9p_navigation.map
         -u
         _printf_float
         --specs=nosys.specs

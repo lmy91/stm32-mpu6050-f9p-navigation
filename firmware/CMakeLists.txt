@@ -13,12 +13,12 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/target.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/gcc-arm-none-eabi.cmake)
 
 # Project definition
-project(stm32_imu_test)
+project(mpu6050_f9p_navigation)
 
 # Enable CMake support for ASM and C/CPP languages
 enable_language(C ASM)
 
-set(PROJECT_NAME stm32_imu_test)
+set(PROJECT_NAME mpu6050_f9p_navigation)
 
 # Create an executable object type
 add_executable(${PROJECT_NAME})

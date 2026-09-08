@@ -82,25 +82,26 @@ FIT_CONFIG = {
 }
 
 
-def find_header_line(path: pathlib.Path) -> int:
+def find_header_line(path: pathlib.Path) -> tuple[int, tuple[int, ...]]:
     with path.open("r", encoding="utf-8-sig", errors="replace") as stream:
         for line_number, line in enumerate(stream):
             columns = tuple(part.strip() for part in line.strip().split(","))
-            if columns == EXPECTED_COLUMNS:
-                return line_number
+            if all(name in columns for name in EXPECTED_COLUMNS):
+                return line_number, tuple(columns.index(name) for name in EXPECTED_COLUMNS)
     raise ValueError(
-        "Decoded CSV header not found. Expected: " + ",".join(EXPECTED_COLUMNS)
+        "Compatible IMU CSV header not found. Required columns: " + ",".join(EXPECTED_COLUMNS)
     )
 
 
 def load_decoded_csv(path: pathlib.Path) -> np.ndarray:
-    header_line = find_header_line(path)
+    header_line, use_columns = find_header_line(path)
     data = np.loadtxt(
         path,
         delimiter=",",
         comments="#",
         skiprows=header_line + 1,
         dtype=PHYSICAL_DTYPE,
+        usecols=use_columns,
     )
     if data.ndim == 0:
         data = data.reshape(1)

@@ -1,125 +1,82 @@
-# STM32 MPU6050 Acquisition and Allan Variance Toolkit
+# STM32 MPU6050/F9P Integrated Navigation Testbed
 
-English | [中文](README.md)
+[中文](README.md) | [English](README_EN.md)
 
-This repository provides an end-to-end MPU6050 workflow: STM32F103 acquisition, a Qt serial monitor and recorder, CSV decoding, and Allan-variance-based stochastic-noise identification.
+This project is a low-cost GNSS/INS testbed. An STM32F103 captures MPU6050 DATA_RDY and ZED-F9P 1PPS in the same hardware-timer domain, assigns a GPS week/time-of-week timestamp to every IMU sample, and outputs 1 Hz position, velocity, PDOP, and sky-view data. The Qt application provides live plots, track display, and separate IMU/GNSS recording.
 
-## Repository layout
+The current release implements the synchronized acquisition and visualization foundation. It does not yet publish a loosely coupled EKF or tightly coupled pseudorange/Doppler solution. Validate timing, sensor noise, installation angles, and lever arms first, then add the fusion layer.
 
-    firmware/                 STM32F103 firmware
-    host/                     Qt real-time monitor and EXE packaging files
-    tools/                    Serial capture, decoding, and Allan analysis
-    data/raw/                 Raw integer CSV files (local, not committed)
-    data/decoded/             Physical-unit CSV files (local, not committed)
-    data/allan_results/       Allan results (local, not committed)
-    docs/                     Notes and documentation images
+## Features
 
-Detailed guides:
+- 100 Hz MPU6050 acceleration, angular rate, and temperature
+- F9P 10 Hz internal navigation with 1 Hz NAV-PVT, NAV-SAT, and TIM-TP output
+- Hardware capture of PPS on PA0/TIM2_CH1 and IMU DATA_RDY on PA1/TIM2_CH2
+- GPS week and microsecond TOW on every IMU sample
+- WGS-84 position, altitude, NED/ground speed, fix, satellite count, and PDOP
+- Qt IMU/speed plots, local/AMap track, and multi-constellation sky plot
+- Separate IMU/GNSS CSV logging from both Qt and the command-line capture tool
+- Decoder and Allan tools compatible with the canonical 21-column IMU v2 file
 
-- [Firmware](firmware/README_EN.md)
-- [Qt serial monitor](host/README_EN.md)
-- [Data tools and Allan analysis](tools/README_EN.md)
-- [Chinese Allan variance notes](docs/Allan方差知识总结.md)
+## Wiring
 
-## Hardware wiring
+| Device | STM32F103C8T6 |
+| --- | --- |
+| MPU6050 VCC/GND | 3.3V/GND |
+| MPU6050 SCL/SDA | PB6/PB7 |
+| MPU6050 INT | PA1/TIM2_CH2 |
+| C099 TP | PA0/TIM2_CH1 |
+| C099 TX_ZED | PA3/USART2_RX |
+| C099 RX_ZED | PA2/USART2_TX |
+| C099 GND | GND |
+| USB-TTL RX/GND | PA9/GND |
 
-The verified wiring is shown below. Power the GY-521 from 3.3 V.
+All devices must share ground. The PC logger uses PA9 at 460800 bit/s; the F9P UART remains at 115200 bit/s.
 
-| Device pin | STM32F103C8T6 | Purpose |
-| --- | --- | --- |
-| GY-521 VCC | 3.3V | IMU power |
-| GY-521 GND | GND | Common ground |
-| GY-521 SCL | PB6 | I2C1_SCL |
-| GY-521 SDA | PB7 | I2C1_SDA |
-| GY-521 INT | PB0 | Data-ready interrupt |
-| USB-TTL RX | PA9 | Receives STM32 USART1_TX |
-| USB-TTL GND | GND | Common ground |
+## Quick start
 
-ST-LINK flashes and debugs the firmware. USB-TTL carries measurement data to the computer. They may remain connected at the same time.
+```powershell
+D:\anaconda\envs\allan-toolkit\python.exe -m pip install -r host\requirements.txt
+D:\anaconda\envs\allan-toolkit\python.exe -m pip install -r tools\requirements.txt
+cmake --preset Release -S firmware
+cmake --build firmware\build\Release --clean-first
+```
 
-<p align="center">
-  <img src="docs/images/hardware_wiring.jpg" alt="STM32, MPU6050, ST-LINK, and USB-TTL wiring" width="700">
-</p>
+Flash `firmware/build/Release/mpu6050_f9p_navigation.elf`, then start:
 
-## Build and run from scratch
+```powershell
+D:\anaconda\envs\allan-toolkit\python.exe host\imu_serial_qt.py
+```
 
-### 1. Install software
+Choose the PA9 USB-TTL port and 460800 baud. Logging creates `imu_gnss_time_*.csv` and `gnss_nav_*.csv`. AMap requires a Web JS API Key plus `securityJsCode`; secrets are local settings and must not be committed.
 
-- STM32CubeIDE for Visual Studio Code, or CMake, Ninja, and the GNU Arm Embedded Toolchain
-- STM32CubeProgrammer and the ST-LINK driver
-- Python 3.10 or later
+Command-line acquisition and analysis:
 
-Install Python dependencies from the repository root:
+```powershell
+D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 0
+D:\anaconda\envs\allan-toolkit\python.exe tools\decode_imu_data.py data\raw\record.log
+D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py data\decoded\imu_gnss_time_xxx.csv --rate 100 --skip-minutes 30
+```
 
-    D:\Anaconda3\python.exe -m pip install -r host\requirements.txt
-    D:\Anaconda3\python.exe -m pip install -r tools\requirements.txt
+See [firmware](firmware/README_EN.md), [desktop application](host/README_EN.md), [tools](tools/README_EN.md), and the [fusion roadmap](fusion/README_EN.md) for details.
 
-Replace the Python path if your interpreter is installed elsewhere.
+## Protocol v2
 
-### 2. Build the firmware
+```text
+IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
+GNSS,gps_week,gps_tow_ms,time_valid,fix,num_sv,lat_e7,lon_e7,hmsl_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,pdop_x100
+SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used
+SAT_END,gps_week,gps_tow_ms,time_valid,num_svs
+```
 
-Run in PowerShell:
+GPS timestamps are usable only when `time_valid=1`. Saved positions remain WGS-84; GCJ-02 conversion is display-only for AMap.
 
-    $ninjaDir = "$env:LOCALAPPDATA\stm32cube\bundles\ninja\1.13.2+st.1\bin"
-    $gccDir = "$env:LOCALAPPDATA\stm32cube\bundles\gnu-tools-for-stm32\14.3.1+st.2\bin"
-    $env:Path = "$ninjaDir;$gccDir;$env:Path"
-    Push-Location firmware
-    cmake --preset Release
-    cmake --build --preset Release
-    Pop-Location
+## Roadmap
 
-Outputs are written to firmware/build/Release/. Adjust the versioned tool directories to match your installation.
+1. Long static runs, Allan identification, installation-angle and lever-arm calibration.
+2. INS mechanization, stationary detection, and zero-velocity updates.
+3. Loosely coupled F9P position/velocity plus MPU6050 error-state EKF.
+4. RTCM/NTRIP and RTK status, followed by tightly coupled raw-measurement fusion.
 
-### 3. Flash the firmware
+## License and origin
 
-Connect ST-LINK SWDIO, SWCLK, GND, and 3.3V, then flash the generated ELF file with STM32CubeProgrammer. Command-line example:
-
-    & "$env:LOCALAPPDATA\stm32cube\bundles\programmer\2.23.0\bin\STM32_Programmer_CLI.exe" -c port=SWD mode=UR reset=HWrst -w "firmware\build\Release\stm32_imu_test.elf" -v -rst
-
-After reset or power-up, acquisition starts automatically and PA9 transmits the data. No start command from the PC is required.
-
-### 4. Run the Qt monitor
-
-    D:\Anaconda3\python.exe host\imu_serial_qt.py
-
-You may also double-click host/run_imu_serial_qt.bat. Select the USB-TTL port, choose 115200 baud, and click Connect. When Save physical-unit CSV is enabled, files default to data/decoded/.
-
-### 5. Capture from the command line
-
-Capture 12 hours from COM3 while directly converting frames to the physical-unit format accepted by the Allan tool:
-
-    D:\Anaconda3\python.exe tools\capture_serial.py COM3 --hours 12
-
-Files default to data/decoded/. To also retain raw integer frames:
-
-    D:\Anaconda3\python.exe tools\capture_serial.py COM3 --hours 12 --raw-output data\raw\mpu6050_static_raw.csv
-
-### 6. Run Allan analysis
-
-    D:\Anaconda3\python.exe tools\allan_noise_identification.py data\decoded\your_data.csv --rate 100 --skip-minutes 30 --points 90
-
-Results default to data/allan_results/input_name_noise/. For useful long-term estimates, keep the IMU stationary for several hours, avoid vibration, and minimize temperature changes.
-
-## Data formats
-
-The STM32 emits 10-column raw frames:
-
-    sample,time_ms,dt_ms,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
-
-Decoded files and the Allan tool use:
-
-    sample,time_s,dt_s,ax_m_s2,ay_m_s2,az_m_s2,temp_deg_c,gx_deg_h,gy_deg_h,gz_deg_h
-
-## Screenshots
-
-![Qt serial monitor](docs/images/imu_serial_monitor_demo_en.png)
-
-![Allan noise identification](docs/images/allan_identification.png)
-
-## Generated files and experimental data
-
-Firmware build files, PyInstaller build/dist directories, Python caches, and experimental files below data/ are excluded by .gitignore. Empty data directories are retained through .gitkeep. Generated files can be deleted and recreated from the commands above.
-
-## License
-
-This project is licensed under the [MIT License](LICENSE).
+MIT License. This project evolved from [lmy91/stm32-mpu6050-allan-toolkit](https://github.com/lmy91/stm32-mpu6050-allan-toolkit); the original copyright and license are retained.

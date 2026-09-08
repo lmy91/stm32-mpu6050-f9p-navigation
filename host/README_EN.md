@@ -1,22 +1,22 @@
-# Qt Real-Time Serial Monitor
+# MPU6050/F9P Navigation Qt Monitor
 
 [Project home](../README_EN.md) | [中文](README.md) | English
 
-This directory contains the desktop application. It receives raw MPU6050 frames from the STM32, converts and plots three-axis acceleration, three-axis angular rate, and temperature. It supports Chinese/English UI text, per-axis selection, lost-frame statistics, and physical-unit CSV recording.
+This directory contains the GNSS/IMU desktop monitor. It displays IMU channels, WGS-84 position/track, NED and ground speed, fix state, satellite count, PDOP, and a satellite sky plot. GPS-timestamped IMU and GNSS navigation data are saved to separate CSV files.
 
 ## Install dependencies
 
 Run from the repository root:
 
-    D:\Anaconda3\python.exe -m pip install -r host\requirements.txt
+    D:\anaconda\envs\allan-toolkit\python.exe -m pip install -r host\requirements.txt
 
-Any Python 3.10+ interpreter may be used. Dependencies include PyQt5, pyqtgraph, pyserial, and NumPy.
+Any Python 3.10+ interpreter may be used. PyQtWebEngine provides the optional online AMap view; the local WGS-84 metric track works without an API key.
 
 ## Start
 
 Run from the repository root:
 
-    D:\Anaconda3\python.exe host\imu_serial_qt.py
+    D:\anaconda\envs\allan-toolkit\python.exe host\imu_serial_qt.py
 
 Alternatively, double-click host/run_imu_serial_qt.bat.
 
@@ -25,22 +25,25 @@ Alternatively, double-click host/run_imu_serial_qt.bat.
 1. Verify STM32 PA9→USB-TTL RX and connect the grounds.
 2. Plug USB-TTL into the computer and close any serial terminal using the port.
 3. Click Refresh and select the corresponding COM port.
-4. Select 115200 baud and click Connect.
-5. Use the Ax/Ay/Az/Gx/Gy/Gz check boxes to choose plotted axes. Select only one for a single-axis view.
-6. Enable Save physical-unit CSV when recording is required. The save dialog defaults to data/decoded/.
+4. Select 460800 baud and click Connect.
+5. Use the Navigation tab for position, speed, DOP, satellites and sky view; use the IMU tab for sensor curves.
+6. Enable separate IMU/GNSS CSV logging. Choose a directory when connecting and two timestamped files are created automatically.
 7. Click Disconnect before unplugging USB-TTL.
 
 Pause plots stops UI refresh only; reception and enabled recording continue. Clear plots clears the display buffer without deleting saved CSV files.
 
 ## Input and output
 
-The input is the STM32 10-column raw integer CSV:
+The input consists of typed records:
 
-    sample,time_ms,dt_ms,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
+    IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,...
+    GNSS,gps_week,gps_tow_ms,time_valid,fix,num_sv,position,velocity,pdop
+    SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno,elevation,azimuth,used
 
-Recorded files use the physical-unit format accepted directly by the Allan tool:
+Logging creates two files:
 
-    sample,time_s,dt_s,ax_m_s2,ay_m_s2,az_m_s2,temp_deg_c,gx_deg_h,gy_deg_h,gz_deg_h
+- `imu_gnss_time_*.csv`: GPS time, local capture time, raw IMU and physical units.
+- `gnss_nav_*.csv`: GPS time, WGS-84 position, NED/ground velocity, PDOP, fix and satellite count.
 
 ## Package a Windows EXE
 
@@ -48,23 +51,23 @@ The project uses PyInstaller onedir mode. It loads files directly from the outpu
 
 Create an isolated packaging environment from the repository root:
 
-    D:\Anaconda3\python.exe -m venv .venv-package
+    D:\anaconda\envs\allan-toolkit\python.exe -m venv .venv-package
     .\.venv-package\Scripts\python.exe -m pip install --upgrade pip
     .\.venv-package\Scripts\python.exe -m pip install -r host\requirements.txt pyinstaller
 
 Build:
 
-    .\.venv-package\Scripts\python.exe -m PyInstaller --noconfirm --clean host\MPU6050_Serial_Monitor.spec
+    .\.venv-package\Scripts\python.exe -m PyInstaller --noconfirm --clean host\MPU6050_F9P_Navigation.spec
 
 Output:
 
-    dist\MPU6050_Serial_Monitor\MPU6050_Serial_Monitor.exe
+    dist\MPU6050_F9P_Navigation\MPU6050_F9P_Navigation.exe
 
-Zip and distribute the complete MPU6050_Serial_Monitor directory, not the EXE alone. build/, dist/, and .venv-package/ are reproducible and excluded from Git.
+Zip and distribute the complete MPU6050_F9P_Navigation directory, not the EXE alone. build/, dist/, and .venv-package/ are reproducible and excluded from Git.
 
 ## Troubleshooting
 
-- Connected but no data: verify the COM port, 115200 baud, PA9→RX, and common ground.
+- Connected but no data: verify the COM port, 460800 baud, PA9→RX, and common ground.
 - Port cannot be opened: close other serial programs, reconnect USB-TTL, and refresh the list.
 - Garbled text or increasing invalid lines: confirm the firmware format and baud rate.
 - Batch file closes immediately: run the Python command in PowerShell to see the error.

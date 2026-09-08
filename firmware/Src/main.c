@@ -1,17 +1,24 @@
 /**
- * STM32F103C8T6 + MPU6050 logger for Allan-deviation analysis.
- * Wiring: VCC->3.3V, GND->GND, SCL->PB6, SDA->PB7, INT->PB0,
- *         USB-TTL RX->PA9.
- * Serial: 115200 8N1. Output is raw, uncalibrated CSV at 100 Hz.
+ * STM32F103C8T6 + MPU6050 + u-blox ZED-F9P synchronized logger.
+ * Wiring: MPU6050 SCL->PB6, SDA->PB7, INT->PA1/TIM2_CH2;
+ *         C099-F9P TP->PA0/TIM2_CH1, TX_ZED->PA3/USART2_RX,
+ *         RX_ZED->PA2/USART2_TX; debug USB-TTL RX->PA9.
+ * USART1 logging uses 460800 8N1 and ZED-F9P UART1 uses 115200 8N1. TIM2 captures
+ * PPS and IMU DATA_RDY in the same 1 MHz hardware time domain.
  */
 #include <stdbool.h>
 #include <stdint.h>
 
 #define REG32(a) (*(volatile uint32_t *)(a))
+#define RCC_CR      REG32(0x40021000u)
+#define RCC_CFGR    REG32(0x40021004u)
 #define RCC_APB2ENR REG32(0x40021018u)
 #define RCC_APB1ENR REG32(0x4002101Cu)
-#define AFIO_EXTICR1 REG32(0x40010008u)
+#define FLASH_ACR   REG32(0x40022000u)
+#define GPIOA_CRL   REG32(0x40010800u)
 #define GPIOA_CRH   REG32(0x40010804u)
+#define GPIOA_BSRR  REG32(0x40010810u)
+#define GPIOA_BRR   REG32(0x40010814u)
 #define GPIOB_CRL   REG32(0x40010C00u)
 #define GPIOB_BSRR  REG32(0x40010C10u)
 #define GPIOB_BRR   REG32(0x40010C14u)
@@ -22,6 +29,10 @@
 #define USART1_DR   REG32(0x40013804u)
 #define USART1_BRR  REG32(0x40013808u)
 #define USART1_CR1  REG32(0x4001380Cu)
+#define USART2_SR   REG32(0x40004400u)
+#define USART2_DR   REG32(0x40004404u)
+#define USART2_BRR  REG32(0x40004408u)
+#define USART2_CR1  REG32(0x4000440Cu)
 #define I2C1_CR1    REG32(0x40005400u)
 #define I2C1_CR2    REG32(0x40005404u)
 #define I2C1_DR     REG32(0x40005410u)
@@ -29,17 +40,30 @@
 #define I2C1_SR2    REG32(0x40005418u)
 #define I2C1_CCR    REG32(0x4000541Cu)
 #define I2C1_TRISE  REG32(0x40005420u)
-#define EXTI_IMR    REG32(0x40010400u)
-#define EXTI_RTSR   REG32(0x40010408u)
-#define EXTI_FTSR   REG32(0x4001040Cu)
-#define EXTI_PR     REG32(0x40010414u)
+#define TIM2_CR1    REG32(0x40000000u)
+#define TIM2_DIER   REG32(0x4000000Cu)
+#define TIM2_SR     REG32(0x40000010u)
+#define TIM2_EGR    REG32(0x40000014u)
+#define TIM2_CCMR1  REG32(0x40000018u)
+#define TIM2_CCER   REG32(0x40000020u)
+#define TIM2_CNT    REG32(0x40000024u)
+#define TIM2_PSC    REG32(0x40000028u)
+#define TIM2_ARR    REG32(0x4000002Cu)
+#define TIM2_CCR1   REG32(0x40000034u)
+#define TIM2_CCR2   REG32(0x40000038u)
 #define NVIC_ISER0  REG32(0xE000E100u)
+#define NVIC_ISER1  REG32(0xE000E104u)
 #define SYSTICK_CTRL REG32(0xE000E010u)
 #define SYSTICK_LOAD REG32(0xE000E014u)
 #define SYSTICK_VAL  REG32(0xE000E018u)
 
 #define USART_TXE (1u << 7)
 #define USART_TC  (1u << 6)
+#define USART_RXNE (1u << 5)
+#define USART_ORE (1u << 3)
+#define TIM_UIF   (1u << 0)
+#define TIM_CC1IF (1u << 1)
+#define TIM_CC2IF (1u << 2)
 #define I2C_PE    (1u << 0)
 #define I2C_START (1u << 8)
 #define I2C_STOP  (1u << 9)
@@ -71,34 +95,133 @@
 #define MPU_WHO_AM_I     0x75u
 #define I2C_TIMEOUT_MS   5u
 #define SAMPLE_RATE_HZ   100u
+#define TIMER_TICK_HZ    1000000u
+#define GPS_WEEK_US      604800000000ull
+#define DEBUG_UART_BAUD  460800u
+#define GNSS_UART_BAUD   115200u
+#define GNSS_RX_SIZE     1024u
+#define GNSS_CFG_MAX_PAYLOAD 192u
+#define UBX_MAX_PAYLOAD  1024u
+#define MAX_SATELLITES   64u
+
+typedef struct {
+    uint8_t gnss_id;
+    uint8_t sv_id;
+    uint8_t cno_dbhz;
+    int8_t elev_deg;
+    int16_t azim_deg;
+    uint8_t used;
+} satellite_t;
 
 static volatile uint32_t g_ms;
+static uint32_t g_sysclk_hz = 8000000u;
+static uint32_t g_pclk1_hz = 8000000u;
+static uint32_t g_pclk2_hz = 8000000u;
+static uint32_t g_tim2_hz = 8000000u;
 static volatile uint32_t g_data_ready;
-static volatile uint32_t g_data_ready_ms;
+static volatile uint64_t g_data_ready_us;
+static volatile uint32_t g_timer_overflows;
+static volatile uint64_t g_pps_capture_us;
+static volatile uint32_t g_pps_count;
+static volatile uint16_t g_pps_gps_week;
+static volatile uint32_t g_pps_gps_tow_ms;
+static volatile uint32_t g_pps_time_valid;
+static volatile uint16_t g_next_gps_week;
+static volatile uint32_t g_next_gps_tow_ms;
+static volatile uint32_t g_next_gps_time_valid;
+static volatile uint8_t g_gnss_rx[GNSS_RX_SIZE];
+static volatile uint16_t g_gnss_rx_head;
+static volatile uint16_t g_gnss_rx_tail;
+static satellite_t g_satellites[MAX_SATELLITES];
+static uint32_t g_sat_itow_ms;
+static uint16_t g_sat_gps_week;
+static uint8_t g_sat_count;
+static uint8_t g_sat_time_valid;
+static uint32_t g_sat_generation;
 /* Volatile diagnostics can be inspected through ST-Link when no serial port
  * is connected: boot 0=start, 1=collecting, 0xE1=MPU not found. */
 volatile uint32_t g_debug_boot_status;
+volatile uint32_t g_debug_clock_hz;
 volatile uint32_t g_debug_sample_count;
 volatile uint32_t g_debug_last_dt_ms;
+volatile uint32_t g_debug_last_dt_us;
 volatile uint32_t g_debug_i2c_errors;
 volatile uint32_t g_debug_probe_mask;
 volatile uint32_t g_debug_who_am_i;
 volatile uint32_t g_debug_interrupt_count;
 volatile uint32_t g_debug_interrupt_overruns;
+volatile uint32_t g_debug_pps_count;
+volatile uint32_t g_debug_gnss_rx_overruns;
+volatile uint32_t g_debug_gnss_messages;
+volatile uint32_t g_debug_gnss_checksum_errors;
+volatile uint32_t g_debug_gnss_ack_count;
+volatile uint32_t g_debug_gnss_nak_count;
+volatile uint32_t g_debug_nav_pvt_count;
+volatile uint32_t g_debug_tim_tp_count;
+volatile uint32_t g_debug_nav_itow_ms;
+volatile uint32_t g_debug_nav_fix_type;
+volatile uint32_t g_debug_nav_num_sv;
+volatile int32_t g_debug_nav_lon_e7;
+volatile int32_t g_debug_nav_lat_e7;
+volatile int32_t g_debug_nav_hmsl_mm;
+volatile int32_t g_debug_nav_vel_n_mms;
+volatile int32_t g_debug_nav_vel_e_mms;
+volatile int32_t g_debug_nav_vel_d_mms;
+volatile uint32_t g_debug_nav_gspeed_mms;
+volatile uint32_t g_debug_nav_pdop_x100;
 volatile int16_t g_debug_last_raw[7];
 static uint8_t g_mpu_addr = 0x68u;
 
-/* Keep the reset-default 8 MHz HSI clock. */
+/* Clock setup is performed after C runtime initialization in board_init(). */
 void SystemInit(void) {}
 void SysTick_Handler(void) { ++g_ms; }
-void EXTI0_IRQHandler(void)
+
+static uint64_t timer_capture_time(uint16_t capture, uint32_t status,
+                                   uint32_t overflow_before)
 {
-    if (EXTI_PR & 1u) {
-        EXTI_PR = 1u; /* Write 1 to clear EXTI0 pending state. */
-        g_data_ready_ms = g_ms;
+    uint32_t high = overflow_before;
+    /* If update is pending and the captured count is in the lower half, the
+     * edge occurred after the wrap even if UIF is handled in the same IRQ. */
+    if ((status & TIM_UIF) && capture < 0x8000u) ++high;
+    return ((uint64_t)high << 16) | capture;
+}
+
+void TIM2_IRQHandler(void)
+{
+    uint32_t status = TIM2_SR;
+    uint32_t high = g_timer_overflows;
+
+    if (status & TIM_CC1IF) {
+        g_pps_capture_us = timer_capture_time((uint16_t)TIM2_CCR1, status, high);
+        ++g_pps_count;
+        ++g_debug_pps_count;
+        g_pps_gps_week = g_next_gps_week;
+        g_pps_gps_tow_ms = g_next_gps_tow_ms;
+        g_pps_time_valid = g_next_gps_time_valid;
+        g_next_gps_time_valid = 0u;
+    }
+    if (status & TIM_CC2IF) {
+        g_data_ready_us = timer_capture_time((uint16_t)TIM2_CCR2, status, high);
         if (g_data_ready) ++g_debug_interrupt_overruns;
         g_data_ready = 1u;
         ++g_debug_interrupt_count;
+    }
+    if (status & TIM_UIF) g_timer_overflows = high + 1u;
+    TIM2_SR = ~(status & (TIM_UIF | TIM_CC1IF | TIM_CC2IF));
+}
+
+void USART2_IRQHandler(void)
+{
+    uint32_t status = USART2_SR;
+    if (status & (USART_RXNE | USART_ORE)) {
+        uint8_t byte = (uint8_t)USART2_DR;
+        uint16_t head = g_gnss_rx_head;
+        uint16_t next = (uint16_t)((head + 1u) & (GNSS_RX_SIZE - 1u));
+        if (next == g_gnss_rx_tail) ++g_debug_gnss_rx_overruns;
+        else {
+            g_gnss_rx[head] = byte;
+            g_gnss_rx_head = next;
+        }
     }
 }
 static uint32_t millis(void) { return g_ms; }
@@ -111,7 +234,32 @@ static void delay_ms(uint32_t delay)
 
 static void board_init(void)
 {
-    SYSTICK_LOAD = 7999u;
+    /* Blue Pill uses an 8 MHz HSE. Run the core at 72 MHz, APB1 at 36 MHz,
+     * and APB2 at 72 MHz. APB1 timer clocks are doubled back to 72 MHz. */
+    RCC_CR |= (1u << 16); /* HSEON */
+    uint32_t timeout = 1000000u;
+    while ((RCC_CR & (1u << 17)) == 0u && timeout) --timeout;
+    if (timeout) {
+        FLASH_ACR = (1u << 4) | 2u; /* Prefetch, two flash wait states. */
+        RCC_CFGR = (RCC_CFGR & ~((7u << 8) | (0xFu << 18))) |
+                   (4u << 8) |      /* APB1 = HCLK / 2 */
+                   (1u << 16) |     /* PLL source = HSE */
+                   (7u << 18);      /* PLL multiplier = 9 */
+        RCC_CR |= (1u << 24); /* PLLON */
+        timeout = 1000000u;
+        while ((RCC_CR & (1u << 25)) == 0u && timeout) --timeout;
+        if (timeout) {
+            RCC_CFGR = (RCC_CFGR & ~3u) | 2u; /* System clock = PLL. */
+            while ((RCC_CFGR & (3u << 2)) != (2u << 2)) {}
+            g_sysclk_hz = 72000000u;
+            g_pclk1_hz = 36000000u;
+            g_pclk2_hz = 72000000u;
+            g_tim2_hz = 72000000u;
+        }
+    }
+    g_debug_clock_hz = g_sysclk_hz;
+
+    SYSTICK_LOAD = g_sysclk_hz / 1000u - 1u;
     SYSTICK_VAL = 0u;
     SYSTICK_CTRL = 7u;
 
@@ -132,25 +280,51 @@ static void uart_init(void)
     /* PA9 AF push-pull 10 MHz; PA10 floating input. */
     GPIOA_CRH = (GPIOA_CRH & ~((0xFu << 4) | (0xFu << 8))) |
                 (0x9u << 4) | (0x4u << 8);
-    USART1_BRR = 0x45u; /* 115200 baud from 8 MHz PCLK2. */
+    USART1_BRR = (g_pclk2_hz + DEBUG_UART_BAUD / 2u) / DEBUG_UART_BAUD;
     USART1_CR1 = (1u << 13) | (1u << 3) | (1u << 2);
 }
 
-static void mpu_interrupt_init(void)
+static void gnss_uart_init(uint32_t baud)
 {
-    /* PB0 input with an internal pull-down. MPU6050 INT is active-high
-     * push-pull; the pull-down prevents false 50 Hz edges if INT is unplugged. */
-    RCC_APB2ENR |= (1u << 0) | (1u << 3); /* AFIO + GPIOB clocks. */
-    GPIOB_CRL = (GPIOB_CRL & ~0xFu) | 0x8u;
-    GPIOB_BRR = 1u; /* ODR=0 selects pull-down rather than pull-up. */
+    RCC_APB2ENR |= (1u << 2); /* GPIOA */
+    RCC_APB1ENR |= (1u << 17); /* USART2 */
+    /* PA2 USART2_TX AF push-pull 10 MHz, PA3 USART2_RX floating input. */
+    GPIOA_CRL = (GPIOA_CRL & ~((0xFu << 8) | (0xFu << 12))) |
+                (0x9u << 8) | (0x4u << 12);
+    USART2_CR1 = 0u;
+    USART2_BRR = (g_pclk1_hz + baud / 2u) / baud;
+    USART2_CR1 = (1u << 13) | (1u << 5) | (1u << 3) | (1u << 2);
+    NVIC_ISER1 = (1u << (38u - 32u));
+}
 
-    /* Route EXTI0 to port B, trigger on rising edge, then enable IRQ 6. */
-    AFIO_EXTICR1 = (AFIO_EXTICR1 & ~0xFu) | 0x1u;
-    EXTI_IMR |= 1u;
-    EXTI_RTSR |= 1u;
-    EXTI_FTSR &= ~1u;
-    EXTI_PR = 1u;
-    NVIC_ISER0 = (1u << 6);
+static void gnss_uart_putc(uint8_t byte)
+{
+    while ((USART2_SR & USART_TXE) == 0u) {}
+    USART2_DR = byte;
+}
+
+static void timer_capture_init(void)
+{
+    RCC_APB2ENR |= (1u << 2); /* GPIOA */
+    RCC_APB1ENR |= (1u << 0); /* TIM2 */
+
+    /* PA0=TIM2_CH1 (F9P TP), PA1=TIM2_CH2 (MPU6050 DATA_RDY).
+     * Both sources are active-high push-pull; pull-downs define unplugged pins. */
+    GPIOA_CRL = (GPIOA_CRL & ~((0xFu << 0) | (0xFu << 4))) |
+                (0x8u << 0) | (0x8u << 4);
+    GPIOA_BRR = (1u << 0) | (1u << 1);
+
+    TIM2_CR1 = 0u;
+    TIM2_PSC = g_tim2_hz / TIMER_TICK_HZ - 1u;
+    TIM2_ARR = 0xFFFFu;
+    TIM2_CNT = 0u;
+    TIM2_CCMR1 = (1u << 0) | (1u << 8); /* CC1/CC2 mapped to TI1/TI2. */
+    TIM2_CCER = (1u << 0) | (1u << 4);  /* Rising-edge captures enabled. */
+    TIM2_EGR = 1u;
+    TIM2_SR = 0u;
+    TIM2_DIER = TIM_UIF | TIM_CC1IF | TIM_CC2IF;
+    NVIC_ISER0 = (1u << 28);
+    TIM2_CR1 = 1u;
 }
 
 static void uart_putc(char c)
@@ -175,6 +349,24 @@ static void uart_u32(uint32_t value)
     while (count) uart_putc(digits[--count]);
 }
 
+static void uart_u64(uint64_t value)
+{
+    char digits[20];
+    uint32_t count = 0u;
+    do {
+        digits[count++] = (char)('0' + value % 10u);
+        value /= 10u;
+    } while (value);
+    while (count) uart_putc(digits[--count]);
+}
+
+static void uart_i32(int32_t value)
+{
+    int64_t wide = value;
+    if (wide < 0) { uart_putc('-'); wide = -wide; }
+    uart_u64((uint64_t)wide);
+}
+
 static void uart_i16(int16_t value)
 {
     int32_t wide = value;
@@ -185,6 +377,273 @@ static void uart_i16(int16_t value)
 static void uart_flush(void)
 {
     while ((USART1_SR & USART_TC) == 0u) {}
+}
+
+static void put_le32(uint8_t *dst, uint32_t value)
+{
+    dst[0] = (uint8_t)value;
+    dst[1] = (uint8_t)(value >> 8);
+    dst[2] = (uint8_t)(value >> 16);
+    dst[3] = (uint8_t)(value >> 24);
+}
+
+static uint16_t get_le16(const uint8_t *src)
+{
+    return (uint16_t)src[0] | ((uint16_t)src[1] << 8);
+}
+
+static uint32_t get_le32(const uint8_t *src)
+{
+    return (uint32_t)src[0] | ((uint32_t)src[1] << 8) |
+           ((uint32_t)src[2] << 16) | ((uint32_t)src[3] << 24);
+}
+
+static void gnss_ubx_send(uint8_t msg_class, uint8_t msg_id,
+                          const uint8_t *payload, uint16_t length)
+{
+    uint8_t ck_a = 0u;
+    uint8_t ck_b = 0u;
+    uint8_t header[4] = {
+        msg_class, msg_id, (uint8_t)length, (uint8_t)(length >> 8)
+    };
+
+    gnss_uart_putc(0xB5u);
+    gnss_uart_putc(0x62u);
+    for (uint32_t i = 0u; i < 4u; ++i) {
+        ck_a = (uint8_t)(ck_a + header[i]);
+        ck_b = (uint8_t)(ck_b + ck_a);
+        gnss_uart_putc(header[i]);
+    }
+    for (uint32_t i = 0u; i < length; ++i) {
+        ck_a = (uint8_t)(ck_a + payload[i]);
+        ck_b = (uint8_t)(ck_b + ck_a);
+        gnss_uart_putc(payload[i]);
+    }
+    gnss_uart_putc(ck_a);
+    gnss_uart_putc(ck_b);
+    while ((USART2_SR & USART_TC) == 0u) {}
+}
+
+typedef struct {
+    uint32_t key;
+    uint32_t value;
+    uint8_t size;
+} gnss_cfg_item_t;
+
+static void gnss_valset(const gnss_cfg_item_t *items, uint32_t count)
+{
+    uint8_t payload[GNSS_CFG_MAX_PAYLOAD];
+    uint16_t length = 4u;
+    payload[0] = 0u; /* Message version. */
+    payload[1] = 1u; /* RAM layer: reapply safely on every MCU boot. */
+    payload[2] = 0u; /* No transaction. */
+    payload[3] = 0u;
+
+    for (uint32_t i = 0u; i < count; ++i) {
+        if ((uint32_t)length + 4u + items[i].size > sizeof payload) return;
+        put_le32(&payload[length], items[i].key);
+        length += 4u;
+        for (uint32_t byte = 0u; byte < items[i].size; ++byte)
+            payload[length++] = (uint8_t)(items[i].value >> (8u * byte));
+    }
+    gnss_ubx_send(0x06u, 0x8Au, payload, length); /* UBX-CFG-VALSET */
+}
+
+static void gnss_send_port_config(void)
+{
+    static const gnss_cfg_item_t config[] = {
+        {0x40520001u, GNSS_UART_BAUD, 4u}, /* CFG-UART1-BAUDRATE */
+        {0x10730001u, 1u, 1u}, /* UART1 input UBX */
+        {0x10730002u, 0u, 1u}, /* UART1 input NMEA */
+        {0x10730004u, 1u, 1u}, /* UART1 input RTCM3 */
+        {0x10740001u, 1u, 1u}, /* UART1 output UBX */
+        {0x10740002u, 0u, 1u}, /* UART1 output NMEA */
+        {0x10740004u, 0u, 1u}, /* UART1 output RTCM3 */
+    };
+    gnss_valset(config, sizeof config / sizeof config[0]);
+}
+
+static void gnss_send_pubx_port_fallback(void)
+{
+    /* Recovery path for a receiver whose UART accepts NMEA but has UBX input
+     * disabled. PUBX,41 first enables UBX-only at 115200; the following
+     * UBX-CFG-VALSET then enables RTCM3 input as well. */
+    static const char body[] = "PUBX,41,1,0001,0001,115200,0";
+    static const char hex[] = "0123456789ABCDEF";
+    uint8_t checksum = 0u;
+    gnss_uart_putc('$');
+    for (uint32_t i = 0u; body[i] != '\0'; ++i) {
+        checksum ^= (uint8_t)body[i];
+        gnss_uart_putc((uint8_t)body[i]);
+    }
+    gnss_uart_putc('*');
+    gnss_uart_putc((uint8_t)hex[checksum >> 4]);
+    gnss_uart_putc((uint8_t)hex[checksum & 0x0Fu]);
+    gnss_uart_putc('\r');
+    gnss_uart_putc('\n');
+    while ((USART2_SR & USART_TC) == 0u) {}
+}
+
+static void gnss_send_navigation_config(void)
+{
+    static const gnss_cfg_item_t config[] = {
+        {0x30210001u, 100u, 2u},     /* CFG-RATE-MEAS: 100 ms = 10 Hz */
+        {0x30210002u, 1u, 2u},       /* CFG-RATE-NAV: every measurement */
+        {0x20210003u, 1u, 1u},       /* CFG-RATE-TIMEREF: GPS */
+        {0x20910007u, 10u, 1u},      /* UBX-NAV-PVT UART1: 1 Hz */
+        {0x20910016u, 10u, 1u},      /* UBX-NAV-SAT UART1: 1 Hz */
+        {0x2091017Eu, 1u, 1u},       /* UBX-TIM-TP UART1: one per 1 Hz pulse */
+        {0x20050023u, 0u, 1u},       /* TP definition: period */
+        {0x20050030u, 1u, 1u},       /* TP pulse definition: length */
+        {0x40050002u, 1000000u, 4u}, /* TP period before lock: 1 s */
+        {0x40050003u, 1000000u, 4u}, /* TP period after lock: 1 s */
+        {0x40050004u, 100000u, 4u},  /* TP high time before lock: 100 ms */
+        {0x40050005u, 100000u, 4u},  /* TP high time after lock: 100 ms */
+        {0x10050007u, 1u, 1u},       /* TP1 enable */
+        {0x10050008u, 1u, 1u},       /* Synchronize TP1 to GNSS */
+        {0x10050009u, 1u, 1u},       /* Use locked TP settings */
+        {0x1005000Au, 1u, 1u},       /* Align TP1 to time of week */
+        {0x1005000Bu, 1u, 1u},       /* Rising-edge polarity */
+        {0x2005000Cu, 1u, 1u},       /* TP1 time grid: GPS */
+    };
+    gnss_valset(config, sizeof config / sizeof config[0]);
+}
+
+static void gnss_configure(void)
+{
+    /* C099 normally ships at 460800 baud; bare/default F9P UART1 is 38400.
+     * Try both, then finish at 115200. A receiver already at 115200 is also
+     * handled. The final VALSET is RAM-only to avoid flash wear. */
+    static const uint32_t candidates[] = {460800u, 38400u, GNSS_UART_BAUD};
+    for (uint32_t i = 0u; i < sizeof candidates / sizeof candidates[0]; ++i) {
+        gnss_uart_init(candidates[i]);
+        delay_ms(20u);
+        gnss_send_port_config();
+        gnss_send_pubx_port_fallback();
+        delay_ms(100u);
+    }
+    gnss_uart_init(GNSS_UART_BAUD);
+    __asm volatile ("cpsid i" ::: "memory");
+    g_gnss_rx_head = 0u;
+    g_gnss_rx_tail = 0u;
+    __asm volatile ("cpsie i" ::: "memory");
+    gnss_send_navigation_config();
+    delay_ms(100u);
+}
+
+static bool gnss_rx_pop(uint8_t *byte)
+{
+    uint16_t tail = g_gnss_rx_tail;
+    if (tail == g_gnss_rx_head) return false;
+    *byte = g_gnss_rx[tail];
+    g_gnss_rx_tail = (uint16_t)((tail + 1u) & (GNSS_RX_SIZE - 1u));
+    return true;
+}
+
+static void gnss_dispatch(uint8_t msg_class, uint8_t msg_id,
+                          const uint8_t *payload, uint16_t length)
+{
+    ++g_debug_gnss_messages;
+    if (msg_class == 0x05u && length == 2u) {
+        if (msg_id == 0x01u) ++g_debug_gnss_ack_count;
+        else if (msg_id == 0x00u) ++g_debug_gnss_nak_count;
+    } else if (msg_class == 0x01u && msg_id == 0x07u && length >= 92u) {
+        g_debug_nav_itow_ms = get_le32(&payload[0]);
+        g_debug_nav_fix_type = payload[20];
+        g_debug_nav_num_sv = payload[23];
+        g_debug_nav_lon_e7 = (int32_t)get_le32(&payload[24]);
+        g_debug_nav_lat_e7 = (int32_t)get_le32(&payload[28]);
+        g_debug_nav_hmsl_mm = (int32_t)get_le32(&payload[36]);
+        g_debug_nav_vel_n_mms = (int32_t)get_le32(&payload[48]);
+        g_debug_nav_vel_e_mms = (int32_t)get_le32(&payload[52]);
+        g_debug_nav_vel_d_mms = (int32_t)get_le32(&payload[56]);
+        g_debug_nav_gspeed_mms = get_le32(&payload[60]);
+        g_debug_nav_pdop_x100 = get_le16(&payload[76]);
+        ++g_debug_nav_pvt_count;
+    } else if (msg_class == 0x01u && msg_id == 0x35u && length >= 8u) {
+        uint8_t count = payload[5];
+        uint8_t available = (uint8_t)((length - 8u) / 12u);
+        if (count > available) count = available;
+        if (count > MAX_SATELLITES) count = MAX_SATELLITES;
+        for (uint8_t i = 0u; i < count; ++i) {
+            uint16_t offset = (uint16_t)(8u + (uint16_t)i * 12u);
+            uint32_t flags = get_le32(&payload[offset + 8u]);
+            g_satellites[i].gnss_id = payload[offset];
+            g_satellites[i].sv_id = payload[offset + 1u];
+            g_satellites[i].cno_dbhz = payload[offset + 2u];
+            g_satellites[i].elev_deg = (int8_t)payload[offset + 3u];
+            g_satellites[i].azim_deg = (int16_t)get_le16(&payload[offset + 4u]);
+            g_satellites[i].used = (flags & (1u << 3)) ? 1u : 0u;
+        }
+        g_sat_itow_ms = get_le32(&payload[0]);
+        __asm volatile ("cpsid i" ::: "memory");
+        g_sat_gps_week = g_pps_gps_week;
+        g_sat_time_valid = (uint8_t)g_pps_time_valid;
+        __asm volatile ("cpsie i" ::: "memory");
+        g_sat_count = count;
+        ++g_sat_generation;
+    } else if (msg_class == 0x0Du && msg_id == 0x01u && length == 16u) {
+        uint32_t tow_ms = get_le32(&payload[0]);
+        uint16_t week = get_le16(&payload[12]);
+        uint8_t flags = payload[14];
+        uint8_t reference = payload[15] & 0x0Fu;
+        __asm volatile ("cpsid i" ::: "memory");
+        g_next_gps_tow_ms = tow_ms;
+        g_next_gps_week = week;
+        /* TP is configured on the GPS grid. Reject UTC/unknown references. */
+        g_next_gps_time_valid = ((flags & 1u) == 0u && reference == 0u &&
+                                  week != 0u) ? 1u : 0u;
+        __asm volatile ("cpsie i" ::: "memory");
+        ++g_debug_tim_tp_count;
+    }
+}
+
+static void gnss_process(void)
+{
+    static uint8_t state;
+    static uint8_t msg_class;
+    static uint8_t msg_id;
+    static uint16_t length;
+    static uint16_t index;
+    static uint8_t ck_a;
+    static uint8_t ck_b;
+    static uint8_t payload[UBX_MAX_PAYLOAD];
+    uint8_t byte;
+
+    while (gnss_rx_pop(&byte)) {
+        switch (state) {
+        case 0u:
+            if (byte == 0xB5u) state = 1u;
+            break;
+        case 1u:
+            state = (byte == 0x62u) ? 2u : (byte == 0xB5u ? 1u : 0u);
+            break;
+        case 2u:
+            msg_class = byte; ck_a = byte; ck_b = ck_a; state = 3u; break;
+        case 3u:
+            msg_id = byte; ck_a += byte; ck_b += ck_a; state = 4u; break;
+        case 4u:
+            length = byte; ck_a += byte; ck_b += ck_a; state = 5u; break;
+        case 5u:
+            length |= (uint16_t)byte << 8; ck_a += byte; ck_b += ck_a;
+            index = 0u;
+            state = length <= UBX_MAX_PAYLOAD ? (length ? 6u : 7u) : 0u;
+            break;
+        case 6u:
+            payload[index++] = byte; ck_a += byte; ck_b += ck_a;
+            if (index == length) state = 7u;
+            break;
+        case 7u:
+            if (byte == ck_a) state = 8u;
+            else { ++g_debug_gnss_checksum_errors; state = 0u; }
+            break;
+        default: /* checksum B */
+            if (byte == ck_b) gnss_dispatch(msg_class, msg_id, payload, length);
+            else ++g_debug_gnss_checksum_errors;
+            state = 0u;
+            break;
+        }
+    }
 }
 
 static void i2c_init(void)
@@ -217,9 +676,9 @@ static void i2c_init(void)
                 (0xDu << 24) | (0xDu << 28);
     I2C1_CR1 = I2C_SWRST;
     I2C1_CR1 = 0u;
-    I2C1_CR2 = 8u;
-    I2C1_CCR = 40u;   /* 100 kHz standard mode. */
-    I2C1_TRISE = 9u;
+    I2C1_CR2 = g_pclk1_hz / 1000000u;
+    I2C1_CCR = g_pclk1_hz / 200000u; /* 100 kHz standard mode. */
+    I2C1_TRISE = g_pclk1_hz / 1000000u + 1u;
     I2C1_CR1 = I2C_PE;
 }
 
@@ -391,8 +850,13 @@ static int16_t i16be(uint8_t high, uint8_t low)
 
 static void print_header(void)
 {
-    uart_puts("# mpu6050_allan_logger_v2_int\r\n");
-    uart_puts("# trigger=mpu6050_data_ready_int_pb0_rising\r\n");
+    uart_puts("# mpu6050_f9p_navigation_protocol_v2\r\n");
+    uart_puts("# timer=tim2_1mhz_48bit_extended\r\n");
+    uart_puts("# pps=f9p_tp_pa0_tim2_ch1_rising\r\n");
+    uart_puts("# trigger=mpu6050_data_ready_pa1_tim2_ch2_rising\r\n");
+    uart_puts("# logger_uart=usart1_pa9_460800\r\n");
+    uart_puts("# f9p_uart=usart2_pa2_pa3_115200_ubx_rtcm3in\r\n");
+    uart_puts("# f9p_output=nav_pvt_1hz_nav_sat_1hz_tim_tp_1hz_gps_grid\r\n");
     uart_puts("# sample_rate_hz=100\r\n");
     uart_puts("# accel_range_g=2\r\n");
     uart_puts("# accel_scale_lsb_per_g=16384\r\n");
@@ -402,10 +866,55 @@ static void print_header(void)
     uart_puts("# mpu_i2c_address=0x6");
     uart_putc(g_mpu_addr == 0x68u ? '8' : '9');
     uart_puts("\r\n");
-    uart_puts("sample,time_ms,dt_ms,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw\r\n");
+    uart_puts("# IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw\r\n");
+    uart_puts("# GNSS,gps_week,gps_tow_ms,time_valid,fix,num_sv,lat_e7,lon_e7,hmsl_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,pdop_x100\r\n");
+    uart_puts("# SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used\r\n");
 }
 
-static void print_sample(uint32_t sample, uint32_t now, uint32_t dt,
+static uint32_t gps_time_from_local(uint64_t local_us, uint16_t *week,
+                                    uint64_t *tow_us)
+{
+    uint64_t pps_us;
+    uint32_t pps_tow_ms;
+    uint16_t pps_week;
+    uint32_t valid;
+
+    __asm volatile ("cpsid i" ::: "memory");
+    pps_us = g_pps_capture_us;
+    pps_tow_ms = g_pps_gps_tow_ms;
+    pps_week = g_pps_gps_week;
+    valid = g_pps_time_valid;
+    __asm volatile ("cpsie i" ::: "memory");
+
+    if (!valid) {
+        *week = 0u;
+        *tow_us = 0u;
+        return 0u;
+    }
+
+    uint64_t gps_us = (uint64_t)pps_tow_ms * 1000u;
+    if (local_us >= pps_us) {
+        gps_us += local_us - pps_us;
+        while (gps_us >= GPS_WEEK_US) {
+            gps_us -= GPS_WEEK_US;
+            ++pps_week;
+        }
+    } else {
+        uint64_t before_pps = pps_us - local_us;
+        while (before_pps > gps_us) {
+            before_pps -= gps_us + 1u;
+            gps_us = GPS_WEEK_US - 1u;
+            --pps_week;
+        }
+        gps_us -= before_pps;
+    }
+
+    *week = pps_week;
+    *tow_us = gps_us;
+    return 1u;
+}
+
+static void print_sample(uint32_t sample, uint64_t now,
                          const uint8_t data[14])
 {
     int16_t values[7] = {
@@ -414,9 +923,16 @@ static void print_sample(uint32_t sample, uint32_t now, uint32_t dt,
         i16be(data[8], data[9]), i16be(data[10], data[11]),
         i16be(data[12], data[13])
     };
+    uint16_t gps_week;
+    uint64_t gps_tow_us;
+    uint32_t time_valid = gps_time_from_local(now, &gps_week, &gps_tow_us);
+
+    uart_puts("IMU,");
     uart_u32(sample); uart_putc(',');
-    uart_u32(now); uart_putc(',');
-    uart_u32(dt);
+    uart_u32(gps_week); uart_putc(',');
+    uart_u64(gps_tow_us); uart_putc(',');
+    uart_u32(time_valid); uart_putc(',');
+    uart_u64(now);
     for (uint32_t i = 0; i < 7u; ++i) {
         g_debug_last_raw[i] = values[i];
         uart_putc(',');
@@ -425,20 +941,85 @@ static void print_sample(uint32_t sample, uint32_t now, uint32_t dt,
     uart_puts("\r\n");
 }
 
+static void print_gnss(uint16_t week, uint32_t time_valid)
+{
+    uart_puts("GNSS,"); uart_u32(week);
+    uart_putc(','); uart_u32(g_debug_nav_itow_ms);
+    uart_putc(','); uart_u32(time_valid);
+    uart_putc(','); uart_u32(g_debug_nav_fix_type);
+    uart_putc(','); uart_u32(g_debug_nav_num_sv);
+    uart_putc(','); uart_i32(g_debug_nav_lat_e7);
+    uart_putc(','); uart_i32(g_debug_nav_lon_e7);
+    uart_putc(','); uart_i32(g_debug_nav_hmsl_mm);
+    uart_putc(','); uart_i32(g_debug_nav_vel_n_mms);
+    uart_putc(','); uart_i32(g_debug_nav_vel_e_mms);
+    uart_putc(','); uart_i32(g_debug_nav_vel_d_mms);
+    uart_putc(','); uart_u32(g_debug_nav_gspeed_mms);
+    uart_putc(','); uart_u32(g_debug_nav_pdop_x100);
+    uart_puts("\r\n");
+}
+
+static void print_satellite(const satellite_t *sat)
+{
+    uart_puts("SAT,"); uart_u32(g_sat_gps_week);
+    uart_putc(','); uart_u32(g_sat_itow_ms);
+    uart_putc(','); uart_u32(g_sat_time_valid);
+    uart_putc(','); uart_u32(sat->gnss_id);
+    uart_putc(','); uart_u32(sat->sv_id);
+    uart_putc(','); uart_u32(sat->cno_dbhz);
+    uart_putc(','); uart_i32(sat->elev_deg);
+    uart_putc(','); uart_i32(sat->azim_deg);
+    uart_putc(','); uart_u32(sat->used);
+    uart_puts("\r\n");
+}
+
+static void print_sat_end(void)
+{
+    uart_puts("SAT_END,"); uart_u32(g_sat_gps_week);
+    uart_putc(','); uart_u32(g_sat_itow_ms);
+    uart_putc(','); uart_u32(g_sat_time_valid);
+    uart_putc(','); uart_u32(g_sat_count);
+    uart_puts("\r\n");
+}
+
+static void print_sync(uint32_t pps_count, uint64_t capture_us,
+                       uint16_t week, uint32_t tow_ms, uint32_t time_valid)
+{
+    uart_puts("# sync,pps="); uart_u32(pps_count);
+    uart_puts(",timer_us="); uart_u64(capture_us);
+    uart_puts(",gps_week="); uart_u32(week);
+    uart_puts(",gps_tow_ms="); uart_u32(tow_ms);
+    uart_puts(",time_valid="); uart_u32(time_valid);
+    uart_puts(",pvt_itow_ms="); uart_u32(g_debug_nav_itow_ms);
+    uart_puts(",fix="); uart_u32(g_debug_nav_fix_type);
+    uart_puts(",num_sv="); uart_u32(g_debug_nav_num_sv);
+    uart_puts(",lat_e7="); uart_i32(g_debug_nav_lat_e7);
+    uart_puts(",lon_e7="); uart_i32(g_debug_nav_lon_e7);
+    uart_puts(",hmsl_mm="); uart_i32(g_debug_nav_hmsl_mm);
+    uart_puts(",vel_n_mms="); uart_i32(g_debug_nav_vel_n_mms);
+    uart_puts(",vel_e_mms="); uart_i32(g_debug_nav_vel_e_mms);
+    uart_puts(",vel_d_mms="); uart_i32(g_debug_nav_vel_d_mms);
+    uart_puts("\r\n");
+}
+
 int main(void)
 {
     uint8_t status = 0u;
     uint8_t frame[14];
     uint32_t sample = 0u;
-    uint32_t previous_ms;
+    uint64_t previous_us = 0u;
     uint32_t errors = 0u;
+    uint32_t printed_pps = 0u;
+    uint32_t printed_nav_pvt = 0u;
+    uint32_t printing_sat_generation = 0u;
+    uint8_t printing_sat_index = 0u;
 
     board_init();
     uart_init();
-    i2c_init();
-    mpu_interrupt_init();
-    delay_ms(200u);
     uart_puts("# booting\r\n");
+    gnss_configure();
+    i2c_init();
+    delay_ms(200u);
 
     if (!mpu_init()) {
         g_debug_boot_status = 0xE1u;
@@ -447,34 +1028,61 @@ int main(void)
         for (;;) led_set(((millis() / 150u) & 1u) != 0u);
     }
 
-    delay_ms(100u);
-    print_header();
-
     /* INT is configured as active-high and latched until INT_STATUS is read.
-     * A DATA_RDY event normally occurs during the delay above, leaving PB0
-     * high.  Clear that stale MPU latch before arming EXTI; otherwise clearing
-     * only EXTI_PR loses the first edge and PB0 can remain high forever. */
+     * Start TIM2 first, clear a possibly stale high level, then the following
+     * PA1 rising edge is captured in hardware. */
+    timer_capture_init();
     (void)mpu_read8(MPU_INT_STATUS, &status);
     __asm volatile ("cpsid i" ::: "memory");
     g_data_ready = 0u;
-    EXTI_PR = 1u;
-    previous_ms = millis();
     __asm volatile ("cpsie i" ::: "memory");
+
+    delay_ms(20u);
+    print_header();
     g_debug_boot_status = 1u;
 
     for (;;) {
-        /* The MPU6050 produces one DATA_RDY pulse per sample. EXTI0 records
-         * its edge and timestamp; the relatively slow I2C/UART work stays
-         * outside the interrupt handler. */
+        gnss_process();
+
+        if (g_debug_nav_pvt_count != printed_nav_pvt) {
+            uint16_t week;
+            uint32_t valid;
+            __asm volatile ("cpsid i" ::: "memory");
+            week = g_pps_gps_week;
+            valid = g_pps_time_valid;
+            __asm volatile ("cpsie i" ::: "memory");
+            print_gnss(week, valid);
+            printed_nav_pvt = g_debug_nav_pvt_count;
+        }
+
+        if (g_pps_count != printed_pps) {
+            uint32_t count;
+            uint64_t capture;
+            uint16_t week;
+            uint32_t tow;
+            uint32_t valid;
+            __asm volatile ("cpsid i" ::: "memory");
+            count = g_pps_count;
+            capture = g_pps_capture_us;
+            week = g_pps_gps_week;
+            tow = g_pps_gps_tow_ms;
+            valid = g_pps_time_valid;
+            __asm volatile ("cpsie i" ::: "memory");
+            print_sync(count, capture, week, tow, valid);
+            printed_pps = count;
+        }
+
+        /* TIM2_CH2 has already captured the edge; slower I2C and debug UART
+         * work stays outside the interrupt handler. */
         if (!g_data_ready) continue;
         __asm volatile ("cpsid i" ::: "memory");
-        uint32_t now = g_data_ready_ms;
+        uint64_t now = g_data_ready_us;
         g_data_ready = 0u;
         __asm volatile ("cpsie i" ::: "memory");
 
         /* Acknowledge/clear MPU6050 DATA_RDY status so the next data-ready
-         * event can generate a fresh INT pulse. This is not polling: EXTI0
-         * has already told us that the event occurred. */
+         * event can generate a fresh rising edge. This is not polling:
+         * TIM2_CH2 has already captured the DATA_RDY event. */
         if (!mpu_read8(MPU_INT_STATUS, &status)) {
             ++g_debug_i2c_errors;
             ++errors;
@@ -492,11 +1100,27 @@ int main(void)
         }
 
         errors = 0u;
-        uint32_t dt = now - previous_ms;
-        print_sample(sample++, now, dt, frame);
+        uint64_t dt = previous_us ? now - previous_us : 0u;
+        print_sample(sample++, now, frame);
+
+        /* Spread the once-per-second sky-view burst over IMU epochs so serial
+         * output never stalls acquisition for tens of milliseconds. */
+        if (g_sat_generation != printing_sat_generation) {
+            printing_sat_generation = g_sat_generation;
+            printing_sat_index = 0u;
+        }
+        if (printing_sat_generation != 0u) {
+            if (printing_sat_index < g_sat_count) {
+                print_satellite(&g_satellites[printing_sat_index++]);
+            } else if (printing_sat_index == g_sat_count) {
+                print_sat_end();
+                ++printing_sat_index;
+            }
+        }
         g_debug_sample_count = sample;
-        g_debug_last_dt_ms = dt;
-        previous_ms = now;
+        g_debug_last_dt_us = (uint32_t)dt;
+        g_debug_last_dt_ms = (uint32_t)(dt / 1000u);
+        previous_us = now;
         led_set((sample % SAMPLE_RATE_HZ) < 4u);
     }
 }

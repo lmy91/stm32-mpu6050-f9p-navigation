@@ -1,125 +1,111 @@
-# STM32 MPU6050 采集与 Allan 方差工具箱
+# STM32 MPU6050/F9P 组合导航实验系统
 
-[English](README_EN.md) | 中文
+[中文](README.md) | [English](README_EN.md)
 
-本项目提供一套完整的 MPU6050 数据链路：STM32F103 实时采集、Qt 串口监视与保存、CSV 解码，以及 Allan 方差随机误差辨识。
+这是一个面向低成本 GNSS/INS 的实时实验平台：STM32F103 在同一个硬件定时器时钟域内捕获 MPU6050 DATA_RDY 与 ZED-F9P 1PPS，把每个 IMU 样本标记为 GPS 周/周内微秒，同时以 1 Hz 输出 GNSS 位置、速度、PDOP 和卫星天空图数据。Qt 上位机完成实时显示、地图轨迹和 IMU/GNSS 分文件记录。
 
-## 项目结构
+当前版本完成的是组合导航的同步采集与可视化基础层，尚未把松组合 EKF 或紧组合伪距/多普勒滤波写入导航解算输出。建议先用本项目完成数据质量、时间同步和杆臂标定验证，再在 `fusion/` 中加入后续算法。
 
-    firmware/                 STM32F103 下位机固件
-    host/                     Qt 串口实时监视器及 EXE 打包配置
-    tools/                    串口采集、历史数据解码、Allan 分析工具
-    data/raw/                 原始整数 CSV（本地数据，不提交）
-    data/decoded/             物理量 CSV（本地数据，不提交）
-    data/allan_results/       Allan 分析结果（本地结果，不提交）
-    docs/                     知识说明和文档图片
+## 当前能力
 
-各模块的详细说明：
+- MPU6050：100 Hz，加速度、角速度、温度
+- F9P：内部导航 10 Hz，对 STM32 输出 NAV-PVT/NAV-SAT/TIM-TP 各 1 Hz
+- PA0/TIM2_CH1 捕获 GNSS PPS，PA1/TIM2_CH2 捕获 IMU DATA_RDY
+- 每条 IMU 数据直接携带 `gps_week`、`gps_tow_us` 和 `time_valid`
+- GNSS 数据包含 WGS-84 坐标、海拔、NED/地面速度、定位类型、卫星数、PDOP
+- Qt 显示 IMU 曲线、速度曲线、本地轨迹/高德地图和多星座天空图
+- Qt 与命令行工具均分别保存 IMU/GNSS CSV
+- 离线解码及 Allan 方差工具兼容当前 21 列 IMU v2 文件
 
-- [下位机固件](firmware/README.md)
-- [Qt 实时监视器](host/README.md)
-- [数据工具与 Allan 分析](tools/README.md)
-- [Allan 方差知识总结](docs/Allan方差知识总结.md)
+## 硬件与接线
 
-## 硬件连接
+| 设备 | STM32F103C8T6 |
+| --- | --- |
+| MPU6050 VCC/GND | 3.3V/GND |
+| MPU6050 SCL/SDA | PB6/PB7 |
+| MPU6050 INT | PA1/TIM2_CH2 |
+| C099 TP | PA0/TIM2_CH1 |
+| C099 TX_ZED | PA3/USART2_RX |
+| C099 RX_ZED | PA2/USART2_TX |
+| C099 GND | GND |
+| USB-TTL RX/GND | PA9/GND |
+| ST-LINK | PA13 SWDIO、PA14 SWCLK、3.3V、GND |
 
-当前项目经过验证的连接如下。GY-521 使用 3.3 V 供电。
+所有设备必须共地。USB-TTL 只需接 PA9→RX 与 GND，电脑采集口为 460800 bit/s；F9P 与 STM32 之间仍为 115200 bit/s。保持 BOOT0=0。
 
-| 设备引脚 | STM32F103C8T6 | 用途 |
-| --- | --- | --- |
-| GY-521 VCC | 3.3V | IMU 供电 |
-| GY-521 GND | GND | 共地 |
-| GY-521 SCL | PB6 | I2C1_SCL |
-| GY-521 SDA | PB7 | I2C1_SDA |
-| GY-521 INT | PB0 | 数据就绪中断 |
-| USB-TTL RX | PA9 | 接收 STM32 USART1_TX |
-| USB-TTL GND | GND | 共地 |
+## 数据链路
 
-ST-LINK 只负责下载和调试固件；USB-TTL 负责把采集数据送到电脑。两者可以同时连接。
+```text
+MPU6050 DATA_RDY ──PA1/TIM2_CH2──┐
+                                 ├─ STM32 时间关联 ─PA9/460800─ Qt/CLI
+F9P 1PPS ─────────PA0/TIM2_CH1───┤
+F9P UBX ──────────PA3/USART2_RX──┘
+RTCM/配置 ────────PA2/USART2_TX──→ F9P
+```
 
-<p align="center">
-  <img src="docs/images/hardware_wiring.jpg" alt="STM32、MPU6050、ST-LINK 与 USB-TTL 实物连接" width="700">
-</p>
+## 快速开始
 
-## 从零开始运行
+安装电脑端依赖：
 
-### 1. 安装软件
+```powershell
+D:\anaconda\envs\allan-toolkit\python.exe -m pip install -r host\requirements.txt
+D:\anaconda\envs\allan-toolkit\python.exe -m pip install -r tools\requirements.txt
+```
 
-- STM32CubeIDE for Visual Studio Code，或 CMake、Ninja 与 GNU Arm Embedded Toolchain
-- STM32CubeProgrammer 和 ST-LINK 驱动
-- Python 3.10 或更高版本
+编译与烧录固件：
 
-在仓库根目录安装 Python 依赖：
+```powershell
+cmake --preset Release -S firmware
+cmake --build firmware\build\Release --clean-first
+& "$env:LOCALAPPDATA\stm32cube\bundles\programmer\2.23.0\bin\STM32_Programmer_CLI.exe" -c port=SWD mode=UR reset=HWrst -w "firmware\build\Release\mpu6050_f9p_navigation.elf" -v -rst
+```
 
-    D:\Anaconda3\python.exe -m pip install -r host\requirements.txt
-    D:\Anaconda3\python.exe -m pip install -r tools\requirements.txt
+启动 Qt：
 
-如果 Python 不在该位置，请替换为自己的解释器路径。
+```powershell
+D:\anaconda\envs\allan-toolkit\python.exe host\imu_serial_qt.py
+```
 
-### 2. 编译 STM32 固件
+选择 PA9 USB-TTL 对应端口（当前设备为 CH340 COM7）和 460800。勾选保存后，程序创建：
 
-在 PowerShell 中执行：
+- `imu_gnss_time_*.csv`：21 列 IMU v2，含 GPS 时间、本地捕获时间、原始值和物理量
+- `gnss_nav_*.csv`：GNSS 时间、WGS-84 位置、速度、PDOP、定位类型和卫星数
 
-    $ninjaDir = "$env:LOCALAPPDATA\stm32cube\bundles\ninja\1.13.2+st.1\bin"
-    $gccDir = "$env:LOCALAPPDATA\stm32cube\bundles\gnu-tools-for-stm32\14.3.1+st.2\bin"
-    $env:Path = "$ninjaDir;$gccDir;$env:Path"
-    Push-Location firmware
-    cmake --preset Release
-    cmake --build --preset Release
-    Pop-Location
+高德地图使用 Web JS API Key 和 `securityJsCode`。密钥只保存在本机 Qt 设置中，不应写入仓库；没有 Key 时本地米制轨迹仍正常工作。
 
-生成文件位于 firmware/build/Release/。工具版本目录可能不同，请按本机实际安装版本修改路径。
+## 命令行采集与分析
 
-### 3. 烧录固件
+```powershell
+# 分别保存 IMU/GNSS，0 小时表示持续到 Ctrl+C
+D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 0
 
-连接 ST-LINK 的 SWDIO、SWCLK、GND 和 3.3V，然后用 STM32CubeProgrammer 选择生成的 ELF 文件烧录。命令行示例：
+# 解码当前串口原始日志、当前 IMU CSV 或旧版 10 列文件
+D:\anaconda\envs\allan-toolkit\python.exe tools\decode_imu_data.py data\raw\record.log
 
-    & "$env:LOCALAPPDATA\stm32cube\bundles\programmer\2.23.0\bin\STM32_Programmer_CLI.exe" -c port=SWD mode=UR reset=HWrst -w "firmware\build\Release\stm32_imu_test.elf" -v -rst
+# 当前 21 列 IMU v2 可直接用于 Allan 分析
+D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py data\decoded\imu_gnss_time_xxx.csv --rate 100 --skip-minutes 30
+```
 
-复位或重新上电后，固件自动开始采集并通过 PA9 输出，不需要电脑再发送启动命令。
+详细说明见 [固件](firmware/README.md)、[Qt 上位机](host/README.md)、[工具](tools/README.md)、[组合导航算法规划](fusion/README.md) 和 [Allan 方差说明](docs/Allan方差知识总结.md)。
 
-### 4. 运行 Qt 实时监视器
+## 串口协议 v2
 
-    D:\Anaconda3\python.exe host\imu_serial_qt.py
+```text
+IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
+GNSS,gps_week,gps_tow_ms,time_valid,fix,num_sv,lat_e7,lon_e7,hmsl_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,pdop_x100
+SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used
+SAT_END,gps_week,gps_tow_ms,time_valid,num_svs
+```
 
-也可以双击 host/run_imu_serial_qt.bat。选择 USB-TTL 对应串口和 115200 波特率后点击“连接”。勾选“同时保存物理量 CSV”时，默认保存到 data/decoded/。
+只有 `time_valid=1` 时 GPS 时间有效。F9P 坐标按 WGS-84 保存；高德界面显示时才转换为 GCJ-02。
 
-### 5. 命令行采集
+## 后续组合导航路线
 
-下面命令采集 COM3 的 12 小时数据，并实时转换成与 Allan 工具一致的物理量格式：
+1. 完成长时间静态采集、Allan 噪声辨识和安装角/杆臂标定。
+2. 加入惯导机械编排、静止检测和零速更新。
+3. 实现 F9P 位置/速度 + MPU6050 的松组合误差状态 EKF。
+4. 接入 RTCM/NTRIP 与 RTK 状态，再实现原始观测量紧组合。
 
-    D:\Anaconda3\python.exe tools\capture_serial.py COM3 --hours 12
+## 许可与来源
 
-文件默认保存在 data/decoded/。如需同时保留原始整数帧：
-
-    D:\Anaconda3\python.exe tools\capture_serial.py COM3 --hours 12 --raw-output data\raw\mpu6050_static_raw.csv
-
-### 6. 分析 Allan 方差
-
-    D:\Anaconda3\python.exe tools\allan_noise_identification.py data\decoded\你的数据.csv --rate 100 --skip-minutes 30 --points 90
-
-结果默认写入 data/allan_results/数据文件名_noise/。建议静置采集至少数小时，采集期间避免振动，并尽量保持温度稳定。
-
-## 数据格式
-
-STM32 串口原始帧共 10 列：
-
-    sample,time_ms,dt_ms,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
-
-解码后和 Allan 工具使用的物理量 CSV：
-
-    sample,time_s,dt_s,ax_m_s2,ay_m_s2,az_m_s2,temp_deg_c,gx_deg_h,gy_deg_h,gz_deg_h
-
-## 程序演示
-
-![Qt 串口实时监视器](docs/images/imu_serial_monitor_demo.png)
-
-![Allan 方差辨识结果](docs/images/allan_identification.png)
-
-## 构建文件与实验数据
-
-固件 build、PyInstaller 的 build/dist、Python 缓存以及 data/ 下的实验数据均已由 .gitignore 排除。空数据目录通过 .gitkeep 保留。删除这些生成文件不会丢失源代码，可按本文命令重新构建。
-
-## 许可证
-
-本项目采用 [MIT License](LICENSE)。
+MIT License。项目演化自 [lmy91/stm32-mpu6050-allan-toolkit](https://github.com/lmy91/stm32-mpu6050-allan-toolkit)，保留原作者版权与许可声明。

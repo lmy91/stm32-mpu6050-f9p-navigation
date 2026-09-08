@@ -1,238 +1,178 @@
-"""Decode MPU6050 raw logger CSV into physical units and plot seven channels.
+"""Decode MPU6050/F9P IMU records into the canonical physical-unit CSV.
 
-The full-rate converted CSV keeps every valid input row. Plotting uses block
-means so multi-hour recordings remain readable and do not exhaust memory.
+Accepted inputs are the current typed ``IMU,...`` serial stream, the current
+IMU CSV, and the legacy 10-column MPU6050 CSV. Processing is streaming so long
+recordings do not need to fit in memory.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import pathlib
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
-
 
 TOOLS_DIR = pathlib.Path(__file__).resolve().parent
 DATA_DIR = TOOLS_DIR.parent / "data"
 G0 = 9.80665
-ACCEL_SCALE = G0 / 16384.0       # m/s^2 per LSB at +/-2 g
-GYRO_SCALE = 3600.0 / 131.0      # deg/h per LSB at +/-250 deg/s
-
-INPUT_COLUMNS = [
-    "sample", "time_ms", "dt_ms",
-    "ax_raw", "ay_raw", "az_raw", "temp_raw",
-    "gx_raw", "gy_raw", "gz_raw",
-]
-
+ACCEL_SCALE = G0 / 16384.0
+GYRO_SCALE = 3600.0 / 131.0
+RAW_NAMES = ("ax_raw", "ay_raw", "az_raw", "temp_raw", "gx_raw", "gy_raw", "gz_raw")
 OUTPUT_COLUMNS = [
-    "sample", "time_s", "dt_s",
-    "ax_m_s2", "ay_m_s2", "az_m_s2", "temp_deg_c",
+    "sample", "gps_week", "gps_tow_us", "time_valid", "timer_us", "time_s", "dt_s",
+    *RAW_NAMES, "ax_m_s2", "ay_m_s2", "az_m_s2", "temp_deg_c",
     "gx_deg_h", "gy_deg_h", "gz_deg_h",
 ]
 
-INPUT_DTYPES = {
-    "sample": "int64",
-    "time_ms": "int64",
-    "dt_ms": "int32",
-    "ax_raw": "int16",
-    "ay_raw": "int16",
-    "az_raw": "int16",
-    "temp_raw": "int16",
-    "gx_raw": "int16",
-    "gy_raw": "int16",
-    "gz_raw": "int16",
-}
-
 
 class BlockMeanCollector:
-    """Collect fixed-row block means across arbitrary input chunk boundaries."""
-
     def __init__(self, block_rows: int) -> None:
         self.block_rows = block_rows
-        self.leftover = np.empty((0, 8), dtype=np.float64)
+        self.pending: list[list[float]] = []
         self.blocks: list[np.ndarray] = []
 
-    def add(self, values: np.ndarray) -> None:
-        if self.leftover.size:
-            values = np.vstack((self.leftover, values))
-        usable = values.shape[0] // self.block_rows * self.block_rows
-        if usable:
-            means = values[:usable].reshape(-1, self.block_rows, values.shape[1]).mean(axis=1)
-            self.blocks.append(means)
-        self.leftover = values[usable:].copy()
+    def add(self, row: list[float]) -> None:
+        self.pending.append(row)
+        if len(self.pending) >= self.block_rows:
+            self.blocks.append(np.mean(np.asarray(self.pending), axis=0))
+            self.pending.clear()
 
     def finish(self) -> np.ndarray:
-        if self.leftover.size:
-            self.blocks.append(np.mean(self.leftover, axis=0, keepdims=True))
-            self.leftover = np.empty((0, 8), dtype=np.float64)
-        if not self.blocks:
-            return np.empty((0, 8), dtype=np.float64)
-        return np.vstack(self.blocks)
+        if self.pending:
+            self.blocks.append(np.mean(np.asarray(self.pending), axis=0))
+            self.pending.clear()
+        return np.vstack(self.blocks) if self.blocks else np.empty((0, 8))
 
 
-def find_header_line(path: pathlib.Path) -> int:
-    with path.open("r", encoding="ascii", errors="replace") as stream:
-        for line_number, line in enumerate(stream):
-            if line.startswith("sample,time_ms,dt_ms,"):
-                return line_number
-    raise ValueError("CSV header not found")
+def parse_typed(row: list[str]) -> dict[str, int] | None:
+    if len(row) != 13 or row[0] != "IMU":
+        return None
+    try:
+        values = [int(value.strip()) for value in row[1:]]
+    except ValueError:
+        return None
+    names = ("sample", "gps_week", "gps_tow_us", "time_valid", "timer_us", *RAW_NAMES)
+    return dict(zip(names, values))
 
 
-def decode_chunk(chunk: pd.DataFrame) -> pd.DataFrame:
-    if chunk[INPUT_COLUMNS].isnull().any().any():
-        raise ValueError("Input contains missing or non-numeric values")
-
-    decoded = pd.DataFrame(index=chunk.index)
-    decoded["sample"] = chunk["sample"].astype(np.int64)
-    decoded["time_s"] = chunk["time_ms"].to_numpy(dtype=np.float64) / 1000.0
-    decoded["dt_s"] = chunk["dt_ms"].to_numpy(dtype=np.float64) / 1000.0
-    for axis in "xyz":
-        decoded[f"a{axis}_m_s2"] = (
-            chunk[f"a{axis}_raw"].to_numpy(dtype=np.float64) * ACCEL_SCALE
-        )
-    decoded["temp_deg_c"] = (
-        chunk["temp_raw"].to_numpy(dtype=np.float64) / 340.0 + 36.53
-    )
-    for axis in "xyz":
-        decoded[f"g{axis}_deg_h"] = (
-            chunk[f"g{axis}_raw"].to_numpy(dtype=np.float64) * GYRO_SCALE
-        )
-    return decoded[OUTPUT_COLUMNS]
-
-
-def plot_matrix(decoded: pd.DataFrame) -> np.ndarray:
-    return decoded[
-        [
-            "time_s",
-            "ax_m_s2", "ay_m_s2", "az_m_s2",
-            "gx_deg_h", "gy_deg_h", "gz_deg_h",
-            "temp_deg_c",
-        ]
-    ].to_numpy(dtype=np.float64, copy=False)
+def parse_named(row: list[str], header: list[str]) -> dict[str, int] | None:
+    if len(row) != len(header):
+        return None
+    fields = dict(zip(header, row))
+    if not {"sample", *RAW_NAMES}.issubset(fields):
+        return None
+    try:
+        output = {name: int(float(fields[name])) for name in ("sample", *RAW_NAMES)}
+        if "timer_us" in fields:
+            output["timer_us"] = int(fields["timer_us"])
+        elif "time_ms" in fields:
+            output["timer_us"] = int(fields["time_ms"]) * 1000
+        else:
+            return None
+        output["gps_week"] = int(fields.get("gps_week", "0"))
+        output["gps_tow_us"] = int(fields.get("gps_tow_us", "0"))
+        output["time_valid"] = int(fields.get("time_valid", "0"))
+        if "dt_ms" in fields:
+            output["legacy_dt_us"] = int(float(fields["dt_ms"]) * 1000)
+        return output
+    except ValueError:
+        return None
 
 
-def plot_channels(path: pathlib.Path, block_means: np.ndarray, block_seconds: float) -> None:
-    if block_means.size == 0:
+def decoded_row(sample: dict[str, int], first_timer_us: int,
+                previous_timer_us: int | None) -> tuple[list[int | float], list[float]]:
+    timer_us = sample["timer_us"]
+    dt_s = ((timer_us - previous_timer_us) / 1e6 if previous_timer_us is not None
+            else sample.get("legacy_dt_us", 0) / 1e6)
+    time_s = (timer_us - first_timer_us) / 1e6
+    ax, ay, az, temp, gx, gy, gz = (sample[name] for name in RAW_NAMES)
+    physical = [ax * ACCEL_SCALE, ay * ACCEL_SCALE, az * ACCEL_SCALE,
+                temp / 340.0 + 36.53,
+                gx * GYRO_SCALE, gy * GYRO_SCALE, gz * GYRO_SCALE]
+    row: list[int | float] = [
+        sample["sample"], sample["gps_week"], sample["gps_tow_us"], sample["time_valid"],
+        timer_us, time_s, dt_s, ax, ay, az, temp, gx, gy, gz, *physical,
+    ]
+    plot_row = [time_s, physical[0], physical[1], physical[2],
+                physical[4], physical[5], physical[6], physical[3]]
+    return row, plot_row
+
+
+def plot_channels(path: pathlib.Path, values: np.ndarray, block_seconds: float) -> None:
+    if values.size == 0:
         raise ValueError("No decoded samples available for plotting")
-
-    time_hours = (block_means[:, 0] - block_means[0, 0]) / 3600.0
+    hours = (values[:, 0] - values[0, 0]) / 3600.0
     channels = [
-        (1, "Acceleration X", "m/s^2", "#1f77b4"),
-        (2, "Acceleration Y", "m/s^2", "#ff7f0e"),
-        (3, "Acceleration Z", "m/s^2", "#2ca02c"),
+        (1, "Acceleration X", "m/s²", "#1f77b4"),
+        (2, "Acceleration Y", "m/s²", "#ff7f0e"),
+        (3, "Acceleration Z", "m/s²", "#2ca02c"),
         (4, "Gyroscope X", "deg/h", "#d62728"),
         (5, "Gyroscope Y", "deg/h", "#9467bd"),
         (6, "Gyroscope Z", "deg/h", "#8c564b"),
-        (7, "Temperature", "degC", "#e41a1c"),
+        (7, "Temperature", "°C", "#e41a1c"),
     ]
-
     figure, axes = plt.subplots(7, 1, figsize=(15, 17), sharex=True, constrained_layout=True)
     for axis, (column, title, unit, color) in zip(axes, channels):
-        axis.plot(time_hours, block_means[:, column], color=color, linewidth=0.9)
-        axis.set_ylabel(unit)
-        axis.set_title(title, loc="left", fontsize=10)
-        axis.grid(True, alpha=0.30)
+        axis.plot(hours, values[:, column], color=color, linewidth=0.9)
+        axis.set_ylabel(unit); axis.set_title(title, loc="left", fontsize=10); axis.grid(True, alpha=0.30)
     axes[-1].set_xlabel("Time after recording start (h)")
-    figure.suptitle(
-        f"MPU6050 decoded channels ({block_seconds:g} s block means; full-rate data retained in CSV)",
-        fontsize=15,
-    )
-    figure.savefig(path, dpi=180)
-    plt.close(figure)
-
-
-def print_summary(total_rows: int, first_sample: int, last_sample: int,
-                  first_time: float, last_time: float, output_csv: pathlib.Path,
-                  plot_path: pathlib.Path) -> None:
-    duration = last_time - first_time
-    expected_rows = last_sample - first_sample + 1
-    print(f"Decoded rows: {total_rows:,}")
-    print(f"Duration: {duration / 3600.0:.3f} h")
-    print(f"Sample range: {first_sample} .. {last_sample}")
-    print(f"Sequence row difference: {expected_rows - total_rows}")
-    print(f"Converted CSV: {output_csv.resolve()}")
-    print(f"Seven-channel plot: {plot_path.resolve()}")
+    figure.suptitle(f"MPU6050/F9P IMU data ({block_seconds:g} s block means)", fontsize=15)
+    figure.savefig(path, dpi=180); plt.close(figure)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("csv", type=pathlib.Path, help="Raw MPU6050 logger CSV")
-    parser.add_argument("--output-csv", type=pathlib.Path, default=None,
-                        help="Full-rate decoded CSV path")
-    parser.add_argument("--plot", type=pathlib.Path, default=None,
-                        help="Seven-channel PNG path")
-    parser.add_argument("--rate", type=float, default=100.0,
-                        help="Nominal sample rate used to size plot blocks")
-    parser.add_argument("--plot-block-seconds", type=float, default=1.0,
-                        help="Seconds averaged into each plotted point")
-    parser.add_argument("--chunk-rows", type=int, default=250000,
-                        help="Rows decoded per memory chunk")
+    parser.add_argument("csv", type=pathlib.Path, help="Raw serial log or IMU CSV")
+    parser.add_argument("--output-csv", type=pathlib.Path, help="Canonical decoded CSV path")
+    parser.add_argument("--plot", type=pathlib.Path, help="Seven-channel PNG path")
+    parser.add_argument("--rate", type=float, default=100.0)
+    parser.add_argument("--plot-block-seconds", type=float, default=1.0)
     args = parser.parse_args()
-
     if not args.csv.exists():
-        raise SystemExit(f"Input CSV not found: {args.csv}")
-    if args.rate <= 0.0 or args.plot_block_seconds <= 0.0:
+        raise SystemExit(f"Input file not found: {args.csv}")
+    if args.rate <= 0 or args.plot_block_seconds <= 0:
         raise SystemExit("--rate and --plot-block-seconds must be positive")
-    if args.chunk_rows < 1000:
-        raise SystemExit("--chunk-rows must be at least 1000")
 
     output_dir = DATA_DIR / "decoded"
     output_csv = args.output_csv or output_dir / f"{args.csv.stem}_physical.csv"
     plot_path = args.plot or output_dir / f"{args.csv.stem}_7channel.png"
-    output_csv.parent.mkdir(parents=True, exist_ok=True)
-    plot_path.parent.mkdir(parents=True, exist_ok=True)
+    output_csv.parent.mkdir(parents=True, exist_ok=True); plot_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_csv.resolve() == args.csv.resolve():
+        raise SystemExit("Input and output CSV paths must be different")
 
-    header_line = find_header_line(args.csv)
-    block_rows = max(1, int(round(args.rate * args.plot_block_seconds)))
-    collector = BlockMeanCollector(block_rows)
-    total_rows = 0
-    first_sample = last_sample = 0
-    first_time = last_time = 0.0
-    first_chunk = True
+    collector = BlockMeanCollector(max(1, round(args.rate * args.plot_block_seconds)))
+    header: list[str] | None = None
+    first_timer_us = previous_timer_us = None
+    first_sample = last_sample = total = invalid = 0
 
-    reader = pd.read_csv(
-        args.csv,
-        delimiter=",",
-        comment="#",
-        skiprows=header_line,
-        usecols=INPUT_COLUMNS,
-        dtype=INPUT_DTYPES,
-        chunksize=args.chunk_rows,
-        on_bad_lines="error",
-    )
+    with args.csv.open("r", encoding="utf-8-sig", errors="replace", newline="") as source, \
+            output_csv.open("w", encoding="utf-8", newline="") as target:
+        writer = csv.writer(target, lineterminator="\n"); writer.writerow(OUTPUT_COLUMNS)
+        for source_row in csv.reader(source):
+            if not source_row or source_row[0].strip().startswith("#"):
+                continue
+            row = [item.strip() for item in source_row]
+            if row[0] == "sample":
+                header = row; continue
+            sample = parse_typed(row) if row[0] == "IMU" else (parse_named(row, header) if header else None)
+            if sample is None:
+                invalid += 1; continue
+            if first_timer_us is None:
+                first_timer_us = sample["timer_us"]; first_sample = sample["sample"]
+            output, plot_row = decoded_row(sample, first_timer_us, previous_timer_us)
+            previous_timer_us = sample["timer_us"]; last_sample = sample["sample"]
+            writer.writerow(output); collector.add(plot_row); total += 1
+            if total % 250000 == 0:
+                target.flush(); print(f"Decoded {total:,} rows", flush=True)
 
-    for chunk_number, chunk in enumerate(reader, start=1):
-        decoded = decode_chunk(chunk)
-        if first_chunk:
-            first_sample = int(decoded["sample"].iloc[0])
-            first_time = float(decoded["time_s"].iloc[0])
-        last_sample = int(decoded["sample"].iloc[-1])
-        last_time = float(decoded["time_s"].iloc[-1])
-
-        decoded.to_csv(
-            output_csv,
-            mode="w" if first_chunk else "a",
-            header=first_chunk,
-            index=False,
-            encoding="utf-8",
-            float_format="%.9g",
-        )
-        collector.add(plot_matrix(decoded))
-        total_rows += decoded.shape[0]
-        first_chunk = False
-        print(f"Chunk {chunk_number}: total {total_rows:,} rows", flush=True)
-
-    if first_chunk:
-        raise SystemExit("No valid data rows found")
-
-    means = collector.finish()
-    plot_channels(plot_path, means, args.plot_block_seconds)
-    print_summary(
-        total_rows, first_sample, last_sample, first_time, last_time,
-        output_csv, plot_path,
-    )
+    if total == 0:
+        raise SystemExit("No valid IMU rows found")
+    plot_channels(plot_path, collector.finish(), args.plot_block_seconds)
+    expected = last_sample - first_sample + 1
+    print(f"Decoded rows: {total:,}; sequence difference: {expected - total:,}; invalid input rows: {invalid:,}")
+    print(f"CSV: {output_csv.resolve()}"); print(f"Plot: {plot_path.resolve()}")
 
 
 if __name__ == "__main__":

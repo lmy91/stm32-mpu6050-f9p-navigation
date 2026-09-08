@@ -39,7 +39,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='MPU6050_Serial_Monitor',
+    name='MPU6050_F9P_Navigation',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -61,5 +61,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='MPU6050_Serial_Monitor',
+    name='MPU6050_F9P_Navigation',
 )

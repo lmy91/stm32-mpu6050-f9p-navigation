@@ -1,118 +1,100 @@
-# Capture, Decode, and Allan Analysis Tools
+# MPU6050/F9P Capture, Decode, and Allan Tools
 
 [Project home](../README_EN.md) | [中文](README.md) | English
 
-This directory contains data-processing scripts only. Run the commands from the repository root. All experiment files are written below data/, never back into tools/.
+These tools match STM32 serial protocol v2. By default they receive the PA9/USART1 USB-TTL stream at 460800 bit/s and save GPS-timestamped IMU data separately from the 1 Hz GNSS navigation solution. Generated experiment data lives under `data/` and is excluded from Git.
 
-## Files
+## Tools
 
 | File | Purpose | Default output |
 | --- | --- | --- |
-| capture_serial.py | Capture serial frames and convert online | data/decoded/ |
-| decode_imu_data.py | Convert legacy raw CSV and plot seven channels | data/decoded/ |
-| allan_noise_identification.py | Compute Allan deviation and identify noise terms | data/allan_results/ |
+| `capture_serial.py` | Headless capture of the current complete serial stream | Separate IMU and GNSS CSV files in `data/decoded/` |
+| `decode_imu_data.py` | Decode current or legacy IMU files and plot seven channels | `data/decoded/` |
+| `allan_noise_identification.py` | Read the canonical IMU CSV and identify Allan noise terms | `data/allan_results/` |
 
-## Install dependencies
+## Install
 
-    D:\Anaconda3\python.exe -m pip install -r tools\requirements.txt
+Run from the repository root:
 
-Any Python 3.10+ interpreter may be used. Display command-line options with:
+    D:\anaconda\envs\allan-toolkit\python.exe -m pip install -r tools\requirements.txt
 
-    D:\Anaconda3\python.exe tools\capture_serial.py --help
-    D:\Anaconda3\python.exe tools\decode_imu_data.py --help
-    D:\Anaconda3\python.exe tools\allan_noise_identification.py --help
+Any Python 3.10+ interpreter may be used. The Qt monitor, command-line capture, and serial terminals cannot own the same COM port simultaneously.
 
-## Data directories
+## 1. Command-line capture
 
-    data\raw\               Optional raw integer frames
-    data\decoded\           Physical-unit CSV and seven-channel plots
-    data\allan_results\     Allan curves, parameter tables, and reports
+The tested USB-TTL port on the current computer is COM7:
 
-Experiment files in these directories are excluded from Git. Only .gitkeep retains the empty directories.
+    D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 12
 
-## 1. Capture a physical-unit CSV directly
+The default baud rate is 460800. `--hours 0` runs until Ctrl+C and closes the files safely. Default outputs are:
 
-Verify that USB-TTL is connected and that no Qt monitor or serial terminal owns the port. Capture 12 hours from COM3:
+    data\decoded\imu_gnss_time_YYYYMMDD_HHMMSS.csv
+    data\decoded\gnss_nav_YYYYMMDD_HHMMSS.csv
 
-    D:\Anaconda3\python.exe tools\capture_serial.py COM3 --hours 12
+Optionally retain the complete STM32 stream:
 
-The default baud rate is 115200. A timestamped file is created in data/decoded/. Use hours=0 to run until Ctrl+C:
+    D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 1 --raw-output data\raw\serial_1h.txt
 
-    D:\Anaconda3\python.exe tools\capture_serial.py COM3 --hours 0
+Custom output paths:
 
-Specify the decoded output and optionally retain raw frames:
+    D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --imu-output data\decoded\imu.csv --gnss-output data\decoded\gnss.csv
 
-    D:\Anaconda3\python.exe tools\capture_serial.py COM3 --hours 12 --output data\decoded\static_12h.csv --raw-output data\raw\static_12h_raw.csv
+`--output` remains as a compatibility alias for `--imu-output`. The capture tool reports lost IMU frames, invalid lines, and satellite records. `SAT`/`SAT_END` records are retained only in the optional raw stream rather than duplicated into the GNSS navigation table.
 
-The primary output is already accepted by the Allan tool; do not decode it again.
+## 2. Decode an IMU file
 
-## 2. Decode an existing raw recording
+The decoder accepts:
 
-Use this only for a legacy STM32 raw integer CSV:
+- current typed `IMU,...` raw serial logs;
+- current 21-column canonical IMU CSV files;
+- legacy 10-column MPU6050 CSV files.
 
-    D:\Anaconda3\python.exe tools\decode_imu_data.py data\raw\static_12h_raw.csv
+Run:
 
-Default outputs:
-
-    data\decoded\static_12h_raw_physical.csv
-    data\decoded\static_12h_raw_7channel.png
+    D:\anaconda\envs\allan-toolkit\python.exe tools\decode_imu_data.py data\raw\serial_1h.txt
 
 Custom outputs:
 
-    D:\Anaconda3\python.exe tools\decode_imu_data.py data\raw\static_12h_raw.csv --output-csv data\decoded\static_12h.csv --plot data\decoded\static_12h.png --rate 100
+    D:\anaconda\envs\allan-toolkit\python.exe tools\decode_imu_data.py data\raw\serial_1h.txt --output-csv data\decoded\imu.csv --plot data\decoded\imu.png --rate 100
 
-The decoder reads long files in chunks and preserves every valid sample. The plot uses block means so a 12-hour recording does not exhaust memory.
+Output always uses the canonical 21-column IMU schema. The decoder streams long files and plots block means to avoid exhausting memory.
 
-## 3. Identify Allan noise parameters
+## 3. Allan noise identification
 
-The input must be a physical-unit CSV:
+Canonical IMU CSV files produced by the capture tool or Qt monitor can be used directly:
 
-    D:\Anaconda3\python.exe tools\allan_noise_identification.py data\decoded\static_12h.csv --rate 100 --skip-minutes 30 --points 90
+    D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py data\decoded\imu.csv --rate 100 --skip-minutes 30 --points 90
 
-Options:
+`--rate` is the nominal sampling rate, currently 100 Hz; `--skip-minutes` discards warm-up; `--points` must be at least 30. Results include Allan and stability plots, parameter CSV files, and a Chinese interpretation report.
 
-- --rate: nominal sample rate; the current firmware normally uses 100 Hz.
-- --skip-minutes: discard the power-on warm-up period; use 0 to keep it.
-- --points: number of logarithmic cluster-time points; minimum 30.
-- --output: custom result directory; otherwise data/allan_results/input_name_noise/.
+## Current serial protocol
 
-Default result files:
+    IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
+    GNSS,gps_week,gps_tow_ms,time_valid,fix,num_sv,lat_e7,lon_e7,hmsl_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,pdop_x100
+    SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used
+    SAT_END,gps_week,gps_tow_ms,time_valid,num_svs
 
-| File | Contents |
-| --- | --- |
-| allan_deviation.png | Accelerometer and gyroscope Allan overview |
-| allan_identification.png | Identified regions and parameter annotations |
-| stability_overview.png | Six-axis and temperature time stability |
-| allan_parameters.csv | Six-axis stochastic-noise parameters |
-| allan_deviation.csv | Allan deviation at each cluster time |
-| 随机误差判读报告.md | Data quality, missing frames, temperature, and interpretation |
+Canonical IMU CSV:
 
-The script estimates white noise (VRW/ARW), bias instability (BI), random walk (RRW), and rate ramp. It also reports sequence discontinuities and estimated missing frames.
+    sample,gps_week,gps_tow_us,time_valid,timer_us,time_s,dt_s,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw,ax_m_s2,ay_m_s2,az_m_s2,temp_deg_c,gx_deg_h,gy_deg_h,gz_deg_h
 
-## Input formats
+Canonical GNSS CSV:
 
-STM32 raw format:
+    gps_week,gps_tow_ms,time_valid,fix,num_sv,lat_deg,lon_deg,hmsl_m,vel_n_m_s,vel_e_m_s,vel_d_m_s,ground_speed_m_s,pdop
 
-    sample,time_ms,dt_ms,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
+`time_valid=1` means GPS time is valid. Coordinates are WGS-84. Angular rates are stored in deg/h and converted to rad/s internally by the Allan tool.
 
-Physical-unit/Allan format:
+## Recommendations
 
-    sample,time_s,dt_s,ax_m_s2,ay_m_s2,az_m_s2,temp_deg_c,gx_deg_h,gy_deg_h,gz_deg_h
-
-Angular rates are stored in deg/h. The Allan script converts them internally to rad/s for estimation.
-
-## Recommendations for long recordings
-
-- Rigidly mount the IMU and avoid vibration, cable motion, and handling.
-- Warm up for about 30 minutes before the stable interval used for analysis.
-- Control temperature where possible; thermal drift raises the long-tau region.
-- A few isolated missing frames are often tolerable, but frequent or consecutive loss violates the uniform-sampling assumption and warrants a new recording.
-- To analyze a file still being recorded, analyze a copied snapshot rather than allowing two writers.
+- After power-up, wait for an F9P fix and verify `time_valid=1`.
+- For a static Allan test, rigidly mount and warm up the IMU for about 30 minutes; avoid temperature changes and cable motion.
+- Run a 5–10 minute pilot first and confirm `lost=0`, `invalid=0`, and one GNSS row per second.
+- Analyze a copied snapshot of a file that is still being recorded; never use two writers on one file.
 
 ## Troubleshooting
 
-- Access denied/port busy: close the Qt monitor and every other serial program.
-- CSV header not found: verify that the input uses one of the 10-column formats above.
-- Warm-up skip leaves too few samples: reduce --skip-minutes.
-- Unknown rate: inspect empirical rate in the report, then rerun with the correct --rate.
-- Out of memory: reduce --points and close large applications; decoding already uses chunked input.
+- Port busy: close the Qt monitor, u-center, and every other serial program.
+- Garbled or invalid lines: select the STM32 USB-TTL port at 460800, not the C099 USB port.
+- No GNSS rows: check crossed PA2/PA3 wiring, common ground, and the C099 J4 ARD route.
+- Invalid GPS time: move the antenna to an open-sky location and wait for valid F9P time.
+- Too few Allan samples: reduce `--skip-minutes` or record a longer static data set.

@@ -1,4 +1,5 @@
 numpy
 pyserial
 PyQt5
+PyQtWebEngine
 pyqtgraph

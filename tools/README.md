@@ -1,118 +1,100 @@
-# 数据采集、解码与 Allan 分析工具
+# MPU6050/F9P 数据采集、解码与 Allan 分析工具
 
 [项目主页](../README.md) | 中文 | [English](README_EN.md)
 
-本目录只包含数据处理脚本。默认在仓库根目录运行命令，所有实验数据统一写入 data/，不写回 tools/。
+工具与当前 STM32 串口协议 v2 配套。默认从 PA9/USART1 的 USB-TTL 串口以 460800 bit/s 接收数据，并将带 GPS 时间戳的 IMU 与 1 Hz GNSS 导航结果分别保存。实验数据统一写入 `data/`，默认不提交 Git。
 
-## 文件说明
+## 工具
 
 | 文件 | 用途 | 默认输出 |
 | --- | --- | --- |
-| capture_serial.py | 串口采集并在线转换物理量 | data/decoded/ |
-| decode_imu_data.py | 将历史原始 CSV 转成物理量并绘制七通道图 | data/decoded/ |
-| allan_noise_identification.py | 计算 Allan 偏差并辨识随机误差参数 | data/allan_results/ |
+| `capture_serial.py` | 无界面采集当前完整串口流 | `data/decoded/` 中独立的 IMU、GNSS CSV |
+| `decode_imu_data.py` | 解码当前/旧版 IMU 文件并画七通道图 | `data/decoded/` |
+| `allan_noise_identification.py` | 直接读取标准 IMU CSV，辨识 Allan 随机误差 | `data/allan_results/` |
 
-## 安装依赖
+## 安装
 
-    D:\Anaconda3\python.exe -m pip install -r tools\requirements.txt
+在仓库根目录运行：
 
-也可以使用其他 Python 3.10+ 解释器。查看任意脚本参数：
+    D:\anaconda\envs\allan-toolkit\python.exe -m pip install -r tools\requirements.txt
 
-    D:\Anaconda3\python.exe tools\capture_serial.py --help
-    D:\Anaconda3\python.exe tools\decode_imu_data.py --help
-    D:\Anaconda3\python.exe tools\allan_noise_identification.py --help
+也可使用其他 Python 3.10+ 解释器。Qt 上位机、命令行采集器和串口助手不能同时打开同一个 COM 口。
 
-## 数据目录
+## 1. 命令行采集
 
-    data\raw\               可选的原始整数帧
-    data\decoded\           物理量 CSV 和七通道解码图
-    data\allan_results\     Allan 曲线、参数表和报告
+当前电脑实测 USB-TTL 为 COM7：
 
-这些目录中的实验文件默认不提交 Git，只有 .gitkeep 用于保留空目录。
+    D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 12
 
-## 1. 直接采集物理量 CSV
+默认波特率为 460800。`--hours 0` 表示持续采集，按 Ctrl+C 会安全关闭文件。默认生成：
 
-确认 USB-TTL 已连接，串口没有被 Qt 监视器或串口助手占用。采集 COM3 的 12 小时数据：
+    data\decoded\imu_gnss_time_YYYYMMDD_HHMMSS.csv
+    data\decoded\gnss_nav_YYYYMMDD_HHMMSS.csv
 
-    D:\Anaconda3\python.exe tools\capture_serial.py COM3 --hours 12
+同时保留 STM32 的完整原始流：
 
-默认波特率 115200，输出文件自动命名并保存至 data/decoded/。hours=0 表示持续运行，按 Ctrl+C 安全结束：
+    D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 1 --raw-output data\raw\serial_1h.txt
 
-    D:\Anaconda3\python.exe tools\capture_serial.py COM3 --hours 0
+自定义输出路径：
 
-指定物理量文件，并同时保存原始帧：
+    D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --imu-output data\decoded\imu.csv --gnss-output data\decoded\gnss.csv
 
-    D:\Anaconda3\python.exe tools\capture_serial.py COM3 --hours 12 --output data\decoded\static_12h.csv --raw-output data\raw\static_12h_raw.csv
+`--output` 是旧版 `--imu-output` 的兼容别名。采集器统计 IMU 丢帧、无效行和卫星记录；`SAT`/`SAT_END` 只写入可选原始流，不重复写入 GNSS 导航表。
 
-主输出已经是 Allan 工具所需格式，不需要再次运行 decode_imu_data.py。
+## 2. 解码 IMU 文件
 
-## 2. 解码已有原始数据
+解码器接受三类输入：
 
-仅当手中已有 STM32 原始整数 CSV 时使用：
+- 当前带类型的 `IMU,...` 原始串口日志；
+- 当前 21 列标准 IMU CSV；
+- 旧版 10 列 MPU6050 CSV。
 
-    D:\Anaconda3\python.exe tools\decode_imu_data.py data\raw\static_12h_raw.csv
+运行：
 
-默认生成：
-
-    data\decoded\static_12h_raw_physical.csv
-    data\decoded\static_12h_raw_7channel.png
+    D:\anaconda\envs\allan-toolkit\python.exe tools\decode_imu_data.py data\raw\serial_1h.txt
 
 自定义输出：
 
-    D:\Anaconda3\python.exe tools\decode_imu_data.py data\raw\static_12h_raw.csv --output-csv data\decoded\static_12h.csv --plot data\decoded\static_12h.png --rate 100
+    D:\anaconda\envs\allan-toolkit\python.exe tools\decode_imu_data.py data\raw\serial_1h.txt --output-csv data\decoded\imu.csv --plot data\decoded\imu.png --rate 100
 
-脚本按块读取长数据，完整保留有效样本；绘图使用分块均值，避免 12 小时数据耗尽内存。
+输出统一为 21 列标准 IMU CSV。脚本流式处理长文件，绘图使用分块均值，避免长时间数据耗尽内存。
 
 ## 3. Allan 随机误差辨识
 
-输入必须是物理量 CSV：
+采集器或 Qt 上位机生成的标准 IMU CSV 可直接输入，不需要再次解码：
 
-    D:\Anaconda3\python.exe tools\allan_noise_identification.py data\decoded\static_12h.csv --rate 100 --skip-minutes 30 --points 90
+    D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py data\decoded\imu.csv --rate 100 --skip-minutes 30 --points 90
 
-参数含义：
+`--rate` 是名义采样率，当前为 100 Hz；`--skip-minutes` 用于跳过预热；`--points` 必须至少为 30。结果包括 Allan 曲线、稳定性曲线、参数 CSV 及中文判读报告。
 
-- --rate：名义采样率，当前固件通常使用 100 Hz。
-- --skip-minutes：跳过开机预热阶段；不需要时设为 0。
-- --points：对数分布的聚类时间点数量，必须至少为 30。
-- --output：自定义结果目录；省略时使用 data/allan_results/输入文件名_noise/。
+## 当前串口协议
 
-默认结果包括：
+    IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
+    GNSS,gps_week,gps_tow_ms,time_valid,fix,num_sv,lat_e7,lon_e7,hmsl_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,pdop_x100
+    SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used
+    SAT_END,gps_week,gps_tow_ms,time_valid,num_svs
 
-| 文件 | 内容 |
-| --- | --- |
-| allan_deviation.png | 加速度计和陀螺仪 Allan 曲线总览 |
-| allan_identification.png | 带拟合区间及参数标注的辨识图 |
-| stability_overview.png | 六轴和温度的时间稳定性 |
-| allan_parameters.csv | 六轴随机误差参数 |
-| allan_deviation.csv | 各聚类时间的 Allan 偏差 |
-| 随机误差判读报告.md | 数据质量、丢帧、温度和参数说明 |
+标准 IMU CSV：
 
-程序辨识白噪声（VRW/ARW）、零偏稳定性（BI）、随机游走（RRW）和速率斜坡，并报告样本序号断点与估计丢帧数。详细原理见 [Allan 方差知识总结](../docs/Allan方差知识总结.md)。
+    sample,gps_week,gps_tow_us,time_valid,timer_us,time_s,dt_s,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw,ax_m_s2,ay_m_s2,az_m_s2,temp_deg_c,gx_deg_h,gy_deg_h,gz_deg_h
 
-## 输入格式
+标准 GNSS CSV：
 
-STM32 原始格式：
+    gps_week,gps_tow_ms,time_valid,fix,num_sv,lat_deg,lon_deg,hmsl_m,vel_n_m_s,vel_e_m_s,vel_d_m_s,ground_speed_m_s,pdop
 
-    sample,time_ms,dt_ms,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
-
-物理量/Allan 格式：
-
-    sample,time_s,dt_s,ax_m_s2,ay_m_s2,az_m_s2,temp_deg_c,gx_deg_h,gy_deg_h,gz_deg_h
-
-角速度 CSV 使用 deg/h；Allan 程序内部会转换为 rad/s 后进行统一估计。
+`time_valid=1` 表示 GPS 时间有效；经纬度为 WGS-84。角速度以 deg/h 保存，Allan 工具内部转换为 rad/s。
 
 ## 长时间采集建议
 
-- 固定 IMU，避免桌面振动、线缆拉扯和人为触碰。
-- 先预热约 30 分钟，再开始用于分析的稳定段。
-- 尽量控制温度；明显温漂会抬高长聚类时间处的曲线。
-- 少量孤立丢帧通常不破坏整次分析，但大量或连续丢帧会改变等间隔采样假设，应重新采集。
-- 正在写入的文件可复制一份快照再分析，不要让两个程序同时写同一文件。
+- 刚上电时等待 F9P 定位并确认 `time_valid=1`。
+- Allan 静态测试应刚性固定 IMU，预热约 30 分钟，避免温度突变和线缆扰动。
+- 先做 5–10 分钟短测，确认 `lost=0`、`invalid=0`、GNSS 每秒一条，再开始长采集。
+- 正在写入的文件应复制快照后分析，不要让两个程序同时写同一文件。
 
 ## 常见问题
 
-- Access denied/串口占用：关闭 Qt 监视器或其他串口软件。
-- CSV header not found：确认输入文件确实是上面列出的 10 列格式。
-- Warm-up skip leaves too few samples：减小 --skip-minutes。
-- 采样率不确定：查看报告中的 empirical rate，再用正确的 --rate 重算。
-- 内存不足：降低 --points，关闭其他大型程序；解码器本身已采用分块读取。
+- 串口占用：关闭 Qt 上位机、u-center 和其他串口程序。
+- 乱码或无效行：确认选中 STM32 的 USB-TTL 端口并使用 460800，而不是 C099 自身的 USB 口。
+- GNSS 文件没有数据：检查 PA2/PA3 交叉连接、共地及 C099 J4 的 ARD 路由。
+- GPS 时间无效：把天线移到能看到天空的位置，等待 F9P 获得有效时间。
+- Allan 提示样本太少：减小 `--skip-minutes` 或延长静态采集时间。

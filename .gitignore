@@ -27,6 +27,10 @@ mx.scratch/
 /data/allan_results/*
 !/data/allan_results/.gitkeep
 /host/imu_realtime_*.csv
+/host/map_key.txt
+*.key
+*.secret
+.env
 
 # Local IDE, OS, and temporary files
 .vscode/

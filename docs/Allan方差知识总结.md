@@ -11,11 +11,12 @@
 | MCU | STM32F103C8T6 |
 | IMU | GY-521 / MPU6050 |
 | I2C | PB6=SCL，PB7=SDA，100 kHz |
-| 数据就绪中断 | MPU6050 INT → STM32 PB0/EXTI0 |
-| 串口 | USART1 PA9 → USB-TTL RXD，115200 8N1 |
+| 数据就绪中断 | MPU6050 INT → STM32 PA1/TIM2_CH2 |
+| GNSS 秒脉冲 | F9P TP → STM32 PA0/TIM2_CH1 |
+| 上位机串口 | USART1 PA9 → USB-TTL RXD，460800 8N1 |
 | 采样触发 | MPU6050 `DATA_RDY` 硬件中断 |
 | FIFO | 当前未启用 |
-| 输出格式 | 原始 16 位整数 CSV |
+| 输出格式 | 串口协议 v2；21 列标准 IMU CSV |
 
 当前程序不是由 STM32 定时器主动读取，也不是在主循环中持续轮询。MPU6050 每产生一帧新数据，就通过 INT 引脚通知 STM32：
 
@@ -24,9 +25,9 @@ MPU6050 产生新数据
         ↓
 INT 引脚锁存为高电平
         ↓
-STM32 PB0 检测上升沿
+TIM2_CH2 硬件锁存 DATA_RDY 上升沿
         ↓
-EXTI0 中断记录事件和时间戳
+TIM2 捕获中断记录与 PPS 同时钟域的微秒时间戳
         ↓
 主循环读取 INT_STATUS 清除中断
         ↓
@@ -41,10 +42,10 @@ UART 输出到电脑
 估计采样率：99.844 Hz
 检查帧数：321
 采样序号：连续，无跳变
-dt_ms：主要为 10 ms，少量为 11 ms
+dt_s：主要为 0.010 s；同时保留 `timer_us`、`gps_week`、`gps_tow_us` 与 `time_valid`
 ```
 
-PB0 使用内部下拉输入，INT 断开时不会因悬空而拾取 50 Hz 市电干扰。
+PA1 使用内部下拉输入。PA0 的 F9P PPS 与 PA1 的 DATA_RDY 都由 TIM2 输入捕获，避免软件中断到达延迟直接污染二者的相对时间。
 
 ### 1.2 当前量程和滤波配置
 
@@ -413,7 +414,7 @@ b(T) = c0 + c1(T-T0) + c2(T-T0)²
 
 1. 查看原始数据相邻样本自相关。
 2. 比较不同 DLPF 带宽下曲线开头拐点是否移动。
-3. 检查采样序号、`dt_ms`和重复样本。
+3. 检查采样序号、`dt_s`、`timer_us` 和重复样本。
 4. 查看功率谱是否存在窄带振动峰值。
 5. 用程序生成纯白噪声，验证 Allan 算法是否得到 `-1/2` 斜率。
 
@@ -585,7 +586,7 @@ Allan方差 → 随机噪声和时变零偏参数
 
 ```powershell
 cd D:\Dr\algorithm\low_cost_gnss_ins
-D:\Anaconda3\python.exe tools\capture_serial.py COM4 --hours 6
+D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM4 --hours 6
 ```
 
 当前 `capture_serial.py` 会在接收时直接转换并保存物理量CSV，默认文件位于
@@ -598,7 +599,7 @@ D:\Anaconda3\python.exe tools\capture_serial.py COM4 --hours 6
 分析命令：
 
 ```powershell
-D:\Anaconda3\python.exe tools\allan_noise_identification.py `
+D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py `
   data\decoded\mpu6050_static_YYYYMMDD_HHMMSS_physical.csv
 ```
 
