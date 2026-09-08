@@ -34,7 +34,7 @@ Pause plots stops UI refresh only; reception and enabled recording continue. Cle
 
 Each connection starts a fresh local track. Independent point rendering avoids horizontal path artifacts seen with continuous curves on some Windows/PyQtGraph combinations. The map applies no position-jump filter and displays every valid navigation point saved in the session's `gnss.csv`.
 
-The local east/north axes use the same metric scale. After panning or zooming, click Best View to fit all collected positions while preserving that scale.
+The local east/north axes use the same metric scale. When a new point approaches the frame edge, the view automatically zooms out to keep the complete track visible. After panning or zooming, Best View restores the same fitted equal-scale view manually.
 
 ## Input and output
 

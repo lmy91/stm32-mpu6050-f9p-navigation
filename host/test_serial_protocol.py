@@ -93,6 +93,19 @@ class SerialProtocolTest(unittest.TestCase):
         aspect = self.monitor.map_widget.local_plot.getViewBox().state["aspectLocked"]
         self.assertEqual(aspect, 1.0)
 
+    def test_track_auto_fits_when_new_point_reaches_edge(self):
+        map_widget = self.monitor.map_widget
+        map_widget.set_position(30.0, 114.0)
+        map_widget.set_position(30.0001, 114.0001)
+        map_widget.local_plot.setRange(xRange=(-0.5, 0.5),
+                                       yRange=(-0.5, 0.5), padding=0.0)
+        map_widget.set_position(30.0002, 114.0002)
+        (x_min, x_max), (y_min, y_max) = map_widget.local_plot.viewRange()
+        self.assertLess(x_min, min(map_widget.east_m))
+        self.assertGreater(x_max, max(map_widget.east_m))
+        self.assertLess(y_min, min(map_widget.north_m))
+        self.assertGreater(y_max, max(map_widget.north_m))
+
 
 if __name__ == "__main__":
     unittest.main()

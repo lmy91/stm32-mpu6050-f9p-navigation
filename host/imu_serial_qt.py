@@ -159,6 +159,8 @@ class SkyPlotWidget(QtWidgets.QWidget):
 class NavigationMapWidget(QtWidgets.QWidget):
     """Local metric track with an optional AMap Web JS view."""
 
+    TRACK_EDGE_MARGIN = 0.03
+
     def __init__(self, settings: QtCore.QSettings) -> None:
         super().__init__()
         self.settings = settings
@@ -214,12 +216,26 @@ class NavigationMapWidget(QtWidgets.QWidget):
     def fit_track(self) -> None:
         """Restore an equal-scale view fitted to all collected positions."""
         self.show_local_map()
+        self._fit_local_track()
+
+    def _fit_local_track(self) -> None:
         self.local_plot.setAspectLocked(True, ratio=1.0)
         if self.east_m:
-            self.local_plot.getViewBox().autoRange(padding=0.08)
+            self.local_plot.getViewBox().autoRange(padding=0.12)
         else:
             self.local_plot.setRange(xRange=(-5.0, 5.0), yRange=(-5.0, 5.0),
                                      padding=0.0)
+
+    def _track_needs_fit(self) -> bool:
+        if not self.east_m:
+            return False
+        (x_min, x_max), (y_min, y_max) = self.local_plot.viewRange()
+        x_margin = max((x_max - x_min) * self.TRACK_EDGE_MARGIN, 1e-6)
+        y_margin = max((y_max - y_min) * self.TRACK_EDGE_MARGIN, 1e-6)
+        return (min(self.east_m) <= x_min + x_margin or
+                max(self.east_m) >= x_max - x_margin or
+                min(self.north_m) <= y_min + y_margin or
+                max(self.north_m) >= y_max - y_margin)
 
     def clear_track(self) -> None:
         self.origin = None; self.east_m.clear(); self.north_m.clear()
@@ -236,6 +252,8 @@ class NavigationMapWidget(QtWidgets.QWidget):
         north = (lat - lat0) * 110574.0
         self.east_m.append(east); self.north_m.append(north)
         self.track_curve.setData(list(self.east_m), list(self.north_m)); self.position_dot.setData([east], [north])
+        if self._track_needs_fit():
+            self._fit_local_track()
         if self.amap_loaded and self.web_view is not None:
             gcj_lat, gcj_lon = wgs84_to_gcj02(lat, lon)
             self.web_view.page().runJavaScript(f"updatePosition({gcj_lon:.9f},{gcj_lat:.9f});")
