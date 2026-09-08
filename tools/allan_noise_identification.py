@@ -696,7 +696,7 @@ def write_report(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("csv", type=pathlib.Path, help="Decoded physical-unit IMU CSV")
+    parser.add_argument("csv", type=pathlib.Path, help="Physical-unit IMU CSV from Qt or capture_serial.py")
     parser.add_argument("--rate", type=float, default=100.0, help="Nominal sample rate in Hz")
     parser.add_argument("--skip-minutes", type=float, default=0.0, help="Discard warm-up data at the start")
     parser.add_argument("--points", type=int, default=90, help="Number of logarithmic Allan points")

@@ -589,8 +589,8 @@ cd D:\Dr\algorithm\low_cost_gnss_ins
 D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM4 --hours 6
 ```
 
-当前 `capture_serial.py` 会在接收时直接转换并保存物理量CSV，默认文件位于
-`data\decoded`，无需再执行离线解码。只有需要同时保留原始计数时才添加：
+当前 `capture_serial.py` 会在接收时直接转换并保存物理量CSV，默认文件为
+`data\decoded\YYYYMMDDHHMMSS\imu.csv`，无需离线解码。只有需要同时保留完整串口文本时才添加：
 
 ```powershell
 --raw-output data\raw\mpu6050_static_raw.csv
@@ -600,7 +600,7 @@ D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM4 --hours 6
 
 ```powershell
 D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py `
-  data\decoded\mpu6050_static_YYYYMMDD_HHMMSS_physical.csv
+  data\decoded\YYYYMMDDHHMMSS\imu.csv
 ```
 
 ### 15.2 长平均时间点的可信度

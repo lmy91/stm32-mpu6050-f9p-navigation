@@ -16,7 +16,7 @@
 - Qt 显示 IMU 曲线、速度曲线、本地轨迹/高德地图和多星座天空图
 - 原始观测包含伪距、载波相位、多普勒、锁定时间、C/N0、质量位及信号/频点标识
 - Qt 可独立选择保存 IMU/GNSS导航/RAWX原始观测 CSV，命令行工具也支持分文件记录
-- 离线解码及Allan方差工具读取当前21列IMU v3文件
+- Allan方差工具直接读取采集器生成的当前21列IMU v3文件
 
 ## 硬件与接线
 
@@ -82,11 +82,8 @@ D:\anaconda\envs\allan-toolkit\python.exe host\imu_serial_qt.py
 # 分别保存 IMU/GNSS，0 小时表示持续到 Ctrl+C
 D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 0
 
-# 解码v3串口原始日志或当前IMU CSV
-D:\anaconda\envs\allan-toolkit\python.exe tools\decode_imu_data.py data\raw\record.log
-
 # 当前21列IMU v3可直接用于Allan分析
-D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py data\decoded\imu_gnss_time_xxx.csv --rate 100 --skip-minutes 30
+D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py data\decoded\20260908180500\imu.csv --rate 100 --skip-minutes 30
 ```
 
 详细说明见 [固件](firmware/README.md)、[Qt 上位机](host/README.md)、[工具](tools/README.md)、[组合导航算法规划](fusion/README.md) 和 [Allan 方差说明](docs/Allan方差知识总结.md)。

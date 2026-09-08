@@ -88,4 +88,4 @@
 - 运行 .bat 后闪退：在 PowerShell 直接运行 Python 命令查看错误信息。
 - EXE 启动慢：确认使用当前 onedir spec，并从完整输出目录启动。
 
-后续命令行采集、解码和 Allan 分析见 [工具说明](../tools/README.md)。
+后续命令行采集和 Allan 分析见 [工具说明](../tools/README.md)。

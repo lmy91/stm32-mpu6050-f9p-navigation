@@ -1,4 +1,4 @@
-# MPU6050/F9P 数据采集、解码与 Allan 分析工具
+# MPU6050/F9P 数据采集与 Allan 分析工具
 
 [项目主页](../README.md) | 中文 | [English](README_EN.md)
 
@@ -8,8 +8,7 @@
 
 | 文件 | 用途 | 默认输出 |
 | --- | --- | --- |
-| `capture_serial.py` | 无界面采集当前完整串口流 | 独立的 IMU、GNSS导航、RAWX CSV |
-| `decode_imu_data.py` | 解码v3 IMU文件并画七通道图 | `data/decoded/` |
+| `capture_serial.py` | 无界面采集当前完整串口流 | 会话文件夹中的 IMU、GNSS导航、RAWX CSV |
 | `allan_noise_identification.py` | 直接读取标准 IMU CSV，辨识 Allan 随机误差 | `data/allan_results/` |
 
 ## 安装
@@ -26,44 +25,29 @@
 
     D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 12
 
-默认波特率为 460800。`--hours 0` 表示持续采集，按 Ctrl+C 会安全关闭文件。默认生成：
+默认波特率为 460800。`--hours 0` 表示持续采集，按 Ctrl+C 会安全关闭文件。与Qt一致，每次采集建立独立会话文件夹，默认生成：
 
-    data\decoded\imu_gnss_time_YYYYMMDD_HHMMSS.csv
-    data\decoded\gnss_nav_YYYYMMDD_HHMMSS.csv
-    data\decoded\gnss_raw_YYYYMMDD_HHMMSS.csv
+    data\decoded\YYYYMMDDHHMMSS\imu.csv
+    data\decoded\YYYYMMDDHHMMSS\gnss.csv
+    data\decoded\YYYYMMDDHHMMSS\rawx.csv
+
+只保存指定类型：
+
+    D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --save imu gnss
+
+`--save imu`、`--save gnss`、`--save rawx` 可任意组合；默认三项全选。同一秒重复启动时会增加 `_01` 后缀，已有数据不会被覆盖。
 
 同时保留 STM32 的完整原始流：
 
     D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 1 --raw-output data\raw\serial_1h.txt
 
-自定义输出路径：
-
-    D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --imu-output data\decoded\imu.csv --gnss-output data\decoded\gnss.csv --rawx-output data\decoded\rawx.csv
-
 采集器统计IMU丢帧、无效行和卫星记录；`SAT`/`SAT_END` 只写入可选原始流，不重复写入GNSS导航表。
 
-## 2. 解码 IMU 文件
+## 2. Allan 随机误差辨识
 
-解码器接受两类v3输入：
+采集器或 Qt 上位机在采集时已经生成标准物理量IMU CSV，可直接输入：
 
-- 当前带类型的 `IMU,...` 原始串口日志；
-- 当前21列标准IMU CSV。
-
-运行：
-
-    D:\anaconda\envs\allan-toolkit\python.exe tools\decode_imu_data.py data\raw\serial_1h.txt
-
-自定义输出：
-
-    D:\anaconda\envs\allan-toolkit\python.exe tools\decode_imu_data.py data\raw\serial_1h.txt --output-csv data\decoded\imu.csv --plot data\decoded\imu.png --rate 100
-
-输出统一为 21 列标准 IMU CSV。脚本流式处理长文件，绘图使用分块均值，避免长时间数据耗尽内存。
-
-## 3. Allan 随机误差辨识
-
-采集器或 Qt 上位机生成的标准 IMU CSV 可直接输入，不需要再次解码：
-
-    D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py data\decoded\imu.csv --rate 100 --skip-minutes 30 --points 90
+    D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py data\decoded\20260908180500\imu.csv --rate 100 --skip-minutes 30 --points 90
 
 `--rate` 是名义采样率，当前为 100 Hz；`--skip-minutes` 用于跳过预热；`--points` 必须至少为 30。结果包括 Allan 曲线、稳定性曲线、参数 CSV 及中文判读报告。
 

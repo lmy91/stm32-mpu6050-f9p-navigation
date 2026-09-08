@@ -1,4 +1,4 @@
-# MPU6050/F9P Capture, Decode, and Allan Tools
+# MPU6050/F9P Capture and Allan Tools
 
 [Project home](../README_EN.md) | [中文](README.md) | English
 
@@ -8,8 +8,7 @@ These tools match STM32 serial protocol v3 and separately save GPS-timestamped I
 
 | File | Purpose | Default output |
 | --- | --- | --- |
-| `capture_serial.py` | Headless capture of the complete stream | Separate IMU, navigation, and RAWX CSV files |
-| `decode_imu_data.py` | Decode protocol-v3 IMU files and plot seven channels | `data/decoded/` |
+| `capture_serial.py` | Headless capture of the complete stream | IMU, navigation, and RAWX CSV files in a session folder |
 | `allan_noise_identification.py` | Read the canonical IMU CSV and identify Allan noise terms | `data/allan_results/` |
 
 ## Install
@@ -26,44 +25,29 @@ The tested USB-TTL port on the current computer is COM7:
 
     D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 12
 
-The default baud rate is 460800. `--hours 0` runs until Ctrl+C and closes the files safely. Default outputs are:
+The default baud rate is 460800. `--hours 0` runs until Ctrl+C and closes the files safely. Like the Qt monitor, each run creates a session folder containing:
 
-    data\decoded\imu_gnss_time_YYYYMMDD_HHMMSS.csv
-    data\decoded\gnss_nav_YYYYMMDD_HHMMSS.csv
-    data\decoded\gnss_raw_YYYYMMDD_HHMMSS.csv
+    data\decoded\YYYYMMDDHHMMSS\imu.csv
+    data\decoded\YYYYMMDDHHMMSS\gnss.csv
+    data\decoded\YYYYMMDDHHMMSS\rawx.csv
+
+Save only selected types:
+
+    D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --save imu gnss
+
+Any combination of `imu`, `gnss`, and `rawx` is accepted; all three are enabled by default. Runs started within the same second receive an `_01` suffix and never overwrite existing data.
 
 Optionally retain the complete STM32 stream:
 
     D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 1 --raw-output data\raw\serial_1h.txt
 
-Custom output paths:
-
-    D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --imu-output data\decoded\imu.csv --gnss-output data\decoded\gnss.csv --rawx-output data\decoded\rawx.csv
-
 The capture tool reports lost IMU frames, invalid lines, and satellite records. `SAT`/`SAT_END` records are retained only in the optional raw stream rather than duplicated into the GNSS navigation table.
 
-## 2. Decode an IMU file
+## 2. Allan noise identification
 
-The decoder accepts:
+The capture tool and Qt monitor produce canonical physical-unit IMU CSV files directly:
 
-- protocol-v3 typed `IMU,...` raw serial logs;
-- current 21-column canonical IMU CSV files.
-
-Run:
-
-    D:\anaconda\envs\allan-toolkit\python.exe tools\decode_imu_data.py data\raw\serial_1h.txt
-
-Custom outputs:
-
-    D:\anaconda\envs\allan-toolkit\python.exe tools\decode_imu_data.py data\raw\serial_1h.txt --output-csv data\decoded\imu.csv --plot data\decoded\imu.png --rate 100
-
-Output always uses the canonical 21-column IMU schema. The decoder streams long files and plots block means to avoid exhausting memory.
-
-## 3. Allan noise identification
-
-Canonical IMU CSV files produced by the capture tool or Qt monitor can be used directly:
-
-    D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py data\decoded\imu.csv --rate 100 --skip-minutes 30 --points 90
+    D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py data\decoded\20260908180500\imu.csv --rate 100 --skip-minutes 30 --points 90
 
 `--rate` is the nominal sampling rate, currently 100 Hz; `--skip-minutes` discards warm-up; `--points` must be at least 30. Results include Allan and stability plots, parameter CSV files, and a Chinese interpretation report.
 

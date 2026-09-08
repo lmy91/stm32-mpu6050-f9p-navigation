@@ -1,11 +1,14 @@
-"""Protocol-v3 tests for the headless serial capture decoder."""
+"""Protocol-v3 tests for the headless serial capture tool."""
 
 from __future__ import annotations
 
+import pathlib
+import tempfile
 import unittest
 
 from tools.capture_serial import (GNSS_COLUMNS, RAWX_COLUMNS, parse_gnss,
-                                  parse_rawx_header, parse_rawx_measurement)
+                                  create_session_directory, parse_rawx_header,
+                                  parse_rawx_measurement)
 
 
 class GnssProtocolTests(unittest.TestCase):
@@ -54,6 +57,14 @@ class GnssProtocolTests(unittest.TestCase):
         assert row is not None
         self.assertEqual(row[11], "GLO_L1OF")
         self.assertEqual(row[12], 1602.5625)
+
+    def test_session_directory_matches_qt_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            root = pathlib.Path(parent)
+            first = create_session_directory(root, "20260908180500")
+            second = create_session_directory(root, "20260908180500")
+            self.assertEqual(first.name, "20260908180500")
+            self.assertEqual(second.name, "20260908180500_01")
 
 
 if __name__ == "__main__":

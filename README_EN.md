@@ -16,7 +16,7 @@ The current release implements the synchronized acquisition and visualization fo
 - Qt IMU/speed plots, local/AMap track, and multi-constellation sky plot
 - Exact pseudorange, carrier phase, Doppler, C/N0, quality flags, and signal/frequency IDs
 - Independently selectable IMU/navigation/RAWX CSV logging in Qt, plus separate command-line recording
-- Decoder and Allan tools for the canonical 21-column IMU v3 file
+- Allan analysis directly reads the canonical 21-column IMU v3 files produced during capture
 
 ## Wiring
 
@@ -54,8 +54,7 @@ Command-line acquisition and analysis:
 
 ```powershell
 D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 0
-D:\anaconda\envs\allan-toolkit\python.exe tools\decode_imu_data.py data\raw\record.log
-D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py data\decoded\imu_gnss_time_xxx.csv --rate 100 --skip-minutes 30
+D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py data\decoded\20260908180500\imu.csv --rate 100 --skip-minutes 30
 ```
 
 See [firmware](firmware/README_EN.md), [desktop application](host/README_EN.md), [tools](tools/README_EN.md), and the [fusion roadmap](fusion/README_EN.md) for details.
@@ -72,7 +71,7 @@ RAWX_MEAS,gnss_id,sv_id,sig_id,freq_id,pr_f64hex,cp_f64hex,do_f32hex,lock_ms,cno
 RAWX_END,num_meas
 ```
 
-RAWX floating-point fields are transported losslessly as IEEE-754 bit-pattern hex. The desktop decoder uses `gnss_id/sig_id/freq_id` to report the received constellation, signal, and frequency. One record is emitted per IMU epoch to keep acquisition responsive.
+RAWX floating-point fields are transported losslessly as IEEE-754 bit-pattern hex. The desktop capture software uses `gnss_id/sig_id/freq_id` to record the received constellation, signal, and frequency. One record is emitted per IMU epoch to keep acquisition responsive.
 
 ## Roadmap
 
