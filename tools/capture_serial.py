@@ -1,7 +1,7 @@
 """Headless capture for the MPU6050/F9P synchronized serial protocol.
 
-The STM32 PA9 stream is decoded into separate IMU and GNSS CSV files. Satellite
-sky-view records are counted but are not duplicated into the navigation CSV.
+The STM32 PA9 stream is decoded into separate IMU, navigation, and RXM-RAWX
+CSV files. Sky-view records are counted but not duplicated into navigation CSV.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import argparse
 import csv
 import datetime as dt
 import pathlib
+import struct
 import time
 
 import serial
@@ -31,6 +32,79 @@ GNSS_COLUMNS = [
     "hmsl_m", "h_acc_m", "v_acc_m", "vel_n_m_s", "vel_e_m_s", "vel_d_m_s",
     "ground_speed_m_s", "s_acc_m_s", "pdop",
 ]
+RAWX_COLUMNS = [
+    "gps_week", "rcv_tow_s", "rx_timer_us", "leap_s", "rec_stat",
+    "epoch_num_meas", "epoch_total_meas", "gnss_id", "sv_id", "sig_id",
+    "freq_id", "signal", "frequency_mhz", "pseudorange_m",
+    "carrier_phase_cycles", "doppler_hz", "locktime_ms", "cno_dbhz",
+    "pr_stdev_m", "cp_stdev_cycles", "do_stdev_hz", "pr_valid",
+    "cp_valid", "half_cycle", "sub_half_cycle",
+]
+
+SIGNALS = {
+    (0, 0): ("GPS_L1CA", 1575.42), (0, 3): ("GPS_L2CL", 1227.60),
+    (0, 4): ("GPS_L2CM", 1227.60), (1, 0): ("SBAS_L1CA", 1575.42),
+    (2, 0): ("GAL_E1C", 1575.42), (2, 1): ("GAL_E1B", 1575.42),
+    (2, 5): ("GAL_E5bI", 1207.14), (2, 6): ("GAL_E5bQ", 1207.14),
+    (3, 0): ("BDS_B1I_D1", 1561.098), (3, 1): ("BDS_B1I_D2", 1561.098),
+    (3, 2): ("BDS_B2I_D1", 1207.14), (3, 3): ("BDS_B2I_D2", 1207.14),
+    (5, 0): ("QZSS_L1CA", 1575.42), (5, 4): ("QZSS_L2CM", 1227.60),
+    (5, 5): ("QZSS_L2CL", 1227.60),
+}
+
+
+def signal_name_frequency(gnss_id: int, sig_id: int,
+                          freq_id: int) -> tuple[str, float | str]:
+    if gnss_id == 6 and sig_id in (0, 2):
+        channel = freq_id - 7
+        if sig_id == 0:
+            return "GLO_L1OF", 1602.0 + channel * 0.5625
+        return "GLO_L2OF", 1246.0 + channel * 0.4375
+    return SIGNALS.get((gnss_id, sig_id),
+                       (f"GNSS{gnss_id}_SIG{sig_id}", ""))
+
+
+def _float_from_hex(value: str, size: int) -> float:
+    bits = int(value, 16)
+    return struct.unpack("<d" if size == 8 else "<f",
+                         bits.to_bytes(size, "little"))[0]
+
+
+def parse_rawx_header(parts: list[str]) -> dict[str, int | float] | None:
+    if len(parts) != 8 or parts[0] != "RAWX":
+        return None
+    try:
+        return {
+            "gps_week": int(parts[1]), "rcv_tow_s": _float_from_hex(parts[2], 8),
+            "leap_s": int(parts[3]), "rec_stat": int(parts[4]),
+            "num_meas": int(parts[5]), "total_meas": int(parts[6]),
+            "rx_timer_us": int(parts[7]),
+        }
+    except (ValueError, OverflowError, struct.error):
+        return None
+
+
+def parse_rawx_measurement(parts: list[str], epoch: dict[str, int | float] | None
+                           ) -> list[int | float | str] | None:
+    if epoch is None or len(parts) != 14 or parts[0] != "RAWX_MEAS":
+        return None
+    try:
+        gnss_id, sv_id, sig_id, freq_id = (int(v) for v in parts[1:5])
+        pr = _float_from_hex(parts[5], 8); cp = _float_from_hex(parts[6], 8)
+        doppler = _float_from_hex(parts[7], 4)
+        lock_ms, cno, pr_std, cp_std, do_std, trk = (int(v) for v in parts[8:])
+    except (ValueError, OverflowError, struct.error):
+        return None
+    signal, frequency = signal_name_frequency(gnss_id, sig_id, freq_id)
+    cp_sigma: float | str = "" if cp_std == 15 else cp_std * 0.004
+    return [
+        epoch["gps_week"], epoch["rcv_tow_s"], epoch["rx_timer_us"],
+        epoch["leap_s"], epoch["rec_stat"], epoch["num_meas"],
+        epoch["total_meas"], gnss_id, sv_id, sig_id, freq_id, signal, frequency,
+        pr, cp, doppler, lock_ms, cno, 0.01 * (2 ** pr_std), cp_sigma,
+        0.002 * (2 ** do_std), trk & 1, (trk >> 1) & 1,
+        (trk >> 2) & 1, (trk >> 3) & 1,
+    ]
 
 
 def parse_imu(parts: list[str], first_timer_us: int | None,
@@ -89,6 +163,7 @@ def main() -> None:
     parser.add_argument("--output-dir", type=pathlib.Path, default=DATA_DIR / "decoded")
     parser.add_argument("--imu-output", type=pathlib.Path, help="IMU CSV path")
     parser.add_argument("--gnss-output", type=pathlib.Path, help="GNSS CSV path")
+    parser.add_argument("--rawx-output", type=pathlib.Path, help="GNSS raw-observation CSV path")
     parser.add_argument("--raw-output", type=pathlib.Path,
                         help="Optional file containing the complete unmodified serial stream")
     args = parser.parse_args()
@@ -96,15 +171,17 @@ def main() -> None:
     stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     imu_path = args.imu_output or args.output_dir / f"imu_gnss_time_{stamp}.csv"
     gnss_path = args.gnss_output or args.output_dir / f"gnss_nav_{stamp}.csv"
-    for path in (imu_path, gnss_path, args.raw_output):
+    rawx_path = args.rawx_output or args.output_dir / f"gnss_raw_{stamp}.csv"
+    for path in (imu_path, gnss_path, rawx_path, args.raw_output):
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
-    resolved = [path.resolve() for path in (imu_path, gnss_path) if path is not None]
+    resolved = [path.resolve() for path in (imu_path, gnss_path, rawx_path)]
     if len(set(resolved)) != len(resolved):
-        raise SystemExit("IMU and GNSS output paths must be different")
+        raise SystemExit("IMU, GNSS navigation, and RAWX output paths must be different")
 
     deadline = time.monotonic() + args.hours * 3600.0 if args.hours > 0 else None
-    imu_rows = gnss_rows = sat_rows = invalid = lost = 0
+    imu_rows = gnss_rows = rawx_rows = sat_rows = invalid = lost = 0
+    rawx_epoch = None
     first_timer_us = last_timer_us = previous_sample = None
     started = time.monotonic()
     raw_stream = None
@@ -112,6 +189,7 @@ def main() -> None:
     print(f"Capturing {args.port} at {args.baud} baud")
     print(f"IMU CSV  -> {imu_path.resolve()}")
     print(f"GNSS CSV -> {gnss_path.resolve()}")
+    print(f"RAWX CSV -> {rawx_path.resolve()}")
     if args.raw_output:
         print(f"Raw stream -> {args.raw_output.resolve()}")
     print("Press Ctrl+C to stop safely.")
@@ -121,10 +199,13 @@ def main() -> None:
             raw_stream = args.raw_output.open("w", encoding="ascii", newline="")
         with serial.Serial(args.port, args.baud, timeout=1) as port, \
                 imu_path.open("w", encoding="utf-8", newline="") as imu_stream, \
-                gnss_path.open("w", encoding="utf-8", newline="") as gnss_stream:
+                gnss_path.open("w", encoding="utf-8", newline="") as gnss_stream, \
+                rawx_path.open("w", encoding="utf-8", newline="") as rawx_stream:
             imu_writer = csv.writer(imu_stream, lineterminator="\n")
             gnss_writer = csv.writer(gnss_stream, lineterminator="\n")
+            rawx_writer = csv.writer(rawx_stream, lineterminator="\n")
             imu_writer.writerow(IMU_COLUMNS); gnss_writer.writerow(GNSS_COLUMNS)
+            rawx_writer.writerow(RAWX_COLUMNS)
             port.reset_input_buffer()
             # Discard the first fragment because opening a continuous stream can
             # begin in the middle of a line.
@@ -157,11 +238,22 @@ def main() -> None:
                         gnss_writer.writerow(row); gnss_rows += 1
                     elif parts[0] in {"SAT", "SAT_END"}:
                         sat_rows += 1
+                    elif parts[0] == "RAWX":
+                        rawx_epoch = parse_rawx_header(parts)
+                        if rawx_epoch is None: invalid += 1
+                    elif parts[0] == "RAWX_MEAS":
+                        row = parse_rawx_measurement(parts, rawx_epoch)
+                        if row is None:
+                            invalid += 1; continue
+                        rawx_writer.writerow(row); rawx_rows += 1
+                    elif parts[0] == "RAWX_END":
+                        if len(parts) != 2: invalid += 1
+                        rawx_epoch = None
                     else:
                         invalid += 1
 
                     if imu_rows and imu_rows % 500 == 0:
-                        imu_stream.flush(); gnss_stream.flush()
+                        imu_stream.flush(); gnss_stream.flush(); rawx_stream.flush()
                         if raw_stream is not None: raw_stream.flush()
                         elapsed = time.monotonic() - started
                         print(f"IMU {imu_rows:,}, GNSS {gnss_rows:,}, lost {lost:,}, "
@@ -169,14 +261,14 @@ def main() -> None:
             except KeyboardInterrupt:
                 pass
             finally:
-                imu_stream.flush(); gnss_stream.flush()
+                imu_stream.flush(); gnss_stream.flush(); rawx_stream.flush()
                 if raw_stream is not None: raw_stream.flush()
     finally:
         if raw_stream is not None:
             raw_stream.close()
 
     elapsed = time.monotonic() - started
-    print(f"\nSaved IMU {imu_rows:,}, GNSS {gnss_rows:,}, satellite records {sat_rows:,} "
+    print(f"\nSaved IMU {imu_rows:,}, GNSS {gnss_rows:,}, RAWX {rawx_rows:,}, satellite records {sat_rows:,} "
           f"({elapsed / 3600.0:.3f} h)")
     print(f"Lost IMU frames: {lost:,}; invalid lines: {invalid:,}")
 

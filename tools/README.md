@@ -2,13 +2,13 @@
 
 [项目主页](../README.md) | 中文 | [English](README_EN.md)
 
-工具与当前STM32串口协议v3配套。默认从PA9/USART1的USB-TTL串口以460800 bit/s接收数据，并将带GPS时间戳的IMU与1 Hz GNSS导航结果分别保存。实验数据统一写入 `data/`，默认不提交Git。
+工具与当前STM32串口协议v3配套。默认从PA9/USART1以460800 bit/s接收数据，并分别保存带GPS时间戳的IMU、1 Hz GNSS导航结果和1 Hz RAWX逐星逐频原始观测。
 
 ## 工具
 
 | 文件 | 用途 | 默认输出 |
 | --- | --- | --- |
-| `capture_serial.py` | 无界面采集当前完整串口流 | `data/decoded/` 中独立的 IMU、GNSS CSV |
+| `capture_serial.py` | 无界面采集当前完整串口流 | 独立的 IMU、GNSS导航、RAWX CSV |
 | `decode_imu_data.py` | 解码v3 IMU文件并画七通道图 | `data/decoded/` |
 | `allan_noise_identification.py` | 直接读取标准 IMU CSV，辨识 Allan 随机误差 | `data/allan_results/` |
 
@@ -30,6 +30,7 @@
 
     data\decoded\imu_gnss_time_YYYYMMDD_HHMMSS.csv
     data\decoded\gnss_nav_YYYYMMDD_HHMMSS.csv
+    data\decoded\gnss_raw_YYYYMMDD_HHMMSS.csv
 
 同时保留 STM32 的完整原始流：
 
@@ -37,7 +38,7 @@
 
 自定义输出路径：
 
-    D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --imu-output data\decoded\imu.csv --gnss-output data\decoded\gnss.csv
+    D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --imu-output data\decoded\imu.csv --gnss-output data\decoded\gnss.csv --rawx-output data\decoded\rawx.csv
 
 采集器统计IMU丢帧、无效行和卫星记录；`SAT`/`SAT_END` 只写入可选原始流，不重复写入GNSS导航表。
 
@@ -72,6 +73,9 @@
     GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,hmsl_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
     SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used
     SAT_END,gps_week,gps_tow_ms,time_valid,num_svs
+    RAWX,gps_week,rcv_tow_f64hex,leap_s,rec_stat,num_meas,total_meas,rx_timer_us
+    RAWX_MEAS,gnss_id,sv_id,sig_id,freq_id,pr_f64hex,cp_f64hex,do_f32hex,lock_ms,cno,pr_std,cp_std,do_std,trk_stat
+    RAWX_END,num_meas
 
 标准 IMU CSV：
 
@@ -82,6 +86,8 @@
     gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,gnss_fix_ok,diff_soln,lat_deg,lon_deg,hmsl_m,h_acc_m,v_acc_m,vel_n_m_s,vel_e_m_s,vel_d_m_s,ground_speed_m_s,s_acc_m_s,pdop
 
 `time_valid=1` 表示GPS时间有效；经纬度为WGS-84。采集器只接受协议v3完整记录。角速度以deg/h保存，Allan工具内部转换为rad/s。
+
+RAWX CSV 将位模式还原为接收机原始浮点值，并给出 `signal` 和 `frequency_mhz`。GLONASS中心频率会结合 `freq_id` 的频率槽计算；未知的新信号仍保留原始ID，不会丢弃观测。
 
 ## 长时间采集建议
 

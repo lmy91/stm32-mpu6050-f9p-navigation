@@ -69,16 +69,21 @@ build/ 是可重建目录，不提交到 Git。
 
     & "$env:LOCALAPPDATA\stm32cube\bundles\programmer\2.23.0\bin\STM32_Programmer_CLI.exe" -c port=SWD mode=UR reset=HWrst -w "firmware\build\Release\mpu6050_f9p_navigation.elf" -v -rst
 
-烧录后复位。PA9 会输出四种带记录类型的 CSV 数据：
+烧录后复位。PA9 会输出协议v3的同步、导航、天空图和RAWX原始观测记录：
 
     IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
     GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,hmsl_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
     SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used
     SAT_END,gps_week,gps_tow_ms,time_valid,num_svs
+    RAWX,gps_week,rcv_tow_f64hex,leap_s,rec_stat,num_meas,total_meas,rx_timer_us
+    RAWX_MEAS,gnss_id,sv_id,sig_id,freq_id,pr_f64hex,cp_f64hex,do_f32hex,lock_ms,cno,pr_std,cp_std,do_std,trk_stat
+    RAWX_END,num_meas
 
 `IMU` 以 100 Hz 输出。每个样本的 `gps_tow_us` 由同一 TIM2 时钟域内硬件捕获的 MPU6050 DATA_RDY 和 F9P 1PPS 直接换算，单位为 GPS 周内微秒；`time_valid=1` 才表示 GPS 时间有效。首次收到有效 TIM-TP/PPS 之前，GPS 周和 TOW 输出 0。
 
 `GNSS` 以 1 Hz 输出。`rx_timer_us` 是完整NAV-PVT帧通过校验时的STM32本地微秒时刻。经纬度单位为 `1e-7 deg`，高程与位置精度为mm，NED/地面速度与速度精度为mm/s，PDOP比例为0.01。`flags`、`flags2`保留NAV-PVT原始质量位，`carr_soln` 从 `flags[7:6]` 提取（0=无载波解，1=RTK浮点，2=RTK固定）。`SAT`/`SAT_END` 提供1 Hz天空图快照。每个PPS还会输出一行以 `# sync` 开头的诊断状态。
+
+`RAWX` 同样为1 Hz。伪距、载波相位和多普勒以IEEE-754位模式十六进制输出，避免单片机浮点格式化并保持接收机原值；`gnss_id/sig_id/freq_id` 标明实际观测信号。最多保存96条观测，`num_meas` 是已输出数，`total_meas` 是接收历元数。固件每个IMU周期最多发送一条RAWX记录，使460800日志串口持续畅通。
 
 ## 工作原理
 

@@ -2,19 +2,20 @@
 
 [中文](README.md) | [English](README_EN.md)
 
-This project is a low-cost GNSS/INS testbed. An STM32F103 captures MPU6050 DATA_RDY and ZED-F9P 1PPS in the same hardware-timer domain, assigns a GPS week/time-of-week timestamp to every IMU sample, and outputs 1 Hz position, velocity, PDOP, and sky-view data. The Qt application provides live plots, track display, and separate IMU/GNSS recording.
+This project is a low-cost GNSS/INS testbed. An STM32F103 timestamps MPU6050 data from ZED-F9P 1PPS and outputs 1 Hz navigation, sky-view, and RXM-RAWX observations. Qt records separate IMU, navigation, and raw-observation files.
 
 The current release implements the synchronized acquisition and visualization foundation. It does not yet publish a loosely coupled EKF or tightly coupled pseudorange/Doppler solution. Validate timing, sensor noise, installation angles, and lever arms first, then add the fusion layer.
 
 ## Features
 
 - 100 Hz MPU6050 acceleration, angular rate, and temperature
-- F9P 10 Hz internal navigation with 1 Hz NAV-PVT, NAV-SAT, and TIM-TP output
+- F9P 10 Hz internal navigation with 1 Hz NAV-PVT, NAV-SAT, RXM-RAWX, and TIM-TP output
 - Hardware capture of PPS on PA0/TIM2_CH1 and IMU DATA_RDY on PA1/TIM2_CH2
 - GPS week and microsecond TOW on every IMU sample
 - WGS-84 position, altitude, NED/ground speed, fix, satellite count, and PDOP
 - Qt IMU/speed plots, local/AMap track, and multi-constellation sky plot
-- Separate IMU/GNSS CSV logging from both Qt and the command-line capture tool
+- Exact pseudorange, carrier phase, Doppler, C/N0, quality flags, and signal/frequency IDs
+- Separate IMU/navigation/RAWX CSV logging from Qt and the command-line tool
 - Decoder and Allan tools for the canonical 21-column IMU v3 file
 
 ## Wiring
@@ -47,7 +48,7 @@ Flash `firmware/build/Release/mpu6050_f9p_navigation.elf`, then start:
 D:\anaconda\envs\allan-toolkit\python.exe host\imu_serial_qt.py
 ```
 
-Choose the PA9 USB-TTL port and 460800 baud. Logging creates `imu_gnss_time_*.csv` and `gnss_nav_*.csv`. AMap requires a Web JS API Key plus `securityJsCode`; secrets are local settings and must not be committed.
+Choose the PA9 USB-TTL port and 460800 baud. Logging creates `imu_gnss_time_*.csv`, `gnss_nav_*.csv`, and `gnss_raw_*.csv`.
 
 Command-line acquisition and analysis:
 
@@ -66,9 +67,12 @@ IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw
 GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,hmsl_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
 SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used
 SAT_END,gps_week,gps_tow_ms,time_valid,num_svs
+RAWX,gps_week,rcv_tow_f64hex,leap_s,rec_stat,num_meas,total_meas,rx_timer_us
+RAWX_MEAS,gnss_id,sv_id,sig_id,freq_id,pr_f64hex,cp_f64hex,do_f32hex,lock_ms,cno,pr_std,cp_std,do_std,trk_stat
+RAWX_END,num_meas
 ```
 
-GPS timestamps are usable only when `time_valid=1`. `rx_timer_us` is the STM32 local time when a complete NAV-PVT frame passes checksum validation. `h_acc_mm`, `v_acc_mm`, and `s_acc_mms` are the horizontal-position, vertical-position, and speed accuracy estimates. `carr_soln` values 0/1/2 mean no carrier solution, RTK float, and RTK fixed. Saved positions remain WGS-84; GCJ-02 conversion is display-only for AMap.
+RAWX floating-point fields are transported losslessly as IEEE-754 bit-pattern hex. The desktop decoder uses `gnss_id/sig_id/freq_id` to report the received constellation, signal, and frequency. One record is emitted per IMU epoch to keep acquisition responsive.
 
 ## Roadmap
 

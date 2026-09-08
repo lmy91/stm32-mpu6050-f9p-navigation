@@ -69,16 +69,21 @@ Select the ELF in STM32CubeProgrammer, or run this from the repository root:
 
     & "$env:LOCALAPPDATA\stm32cube\bundles\programmer\2.23.0\bin\STM32_Programmer_CLI.exe" -c port=SWD mode=UR reset=HWrst -w "firmware\build\Release\mpu6050_f9p_navigation.elf" -v -rst
 
-After reset, PA9 emits four typed CSV record types:
+After reset, PA9 emits protocol-v3 synchronization, navigation, sky-view, and RAWX records:
 
     IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
     GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,hmsl_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
     SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used
     SAT_END,gps_week,gps_tow_ms,time_valid,num_svs
+    RAWX,gps_week,rcv_tow_f64hex,leap_s,rec_stat,num_meas,total_meas,rx_timer_us
+    RAWX_MEAS,gnss_id,sv_id,sig_id,freq_id,pr_f64hex,cp_f64hex,do_f32hex,lock_ms,cno,pr_std,cp_std,do_std,trk_stat
+    RAWX_END,num_meas
 
 `IMU` records are produced at 100 Hz. Each `gps_tow_us` value is derived directly from the MPU6050 DATA_RDY and F9P 1PPS edges captured in the same TIM2 clock domain. GPS time is usable only when `time_valid=1`; week and TOW are zero before the first valid TIM-TP/PPS association.
 
 `GNSS` records are produced at 1 Hz. `rx_timer_us` is the STM32 local microsecond time when a complete NAV-PVT frame passes checksum validation. Latitude/longitude use `1e-7 deg`; height and position accuracy use mm; NED/ground velocity and speed accuracy use mm/s; PDOP uses a 0.01 scale. `flags` and `flags2` preserve the NAV-PVT quality bits, while `carr_soln` extracts `flags[7:6]` (0=no carrier solution, 1=RTK float, 2=RTK fixed). `SAT`/`SAT_END` provide a 1 Hz sky-view snapshot. A `# sync` diagnostic line is also emitted for every PPS.
+
+`RAWX` is also 1 Hz. Pseudorange, carrier phase, and Doppler are transported as exact IEEE-754 bit-pattern hex together with signal IDs and quality flags. Up to 96 observations are stored, and one RAWX record is emitted per IMU epoch to keep the 460800-bit/s logger responsive.
 
 ## How it works
 

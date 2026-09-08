@@ -2,13 +2,13 @@
 
 [Project home](../README_EN.md) | [中文](README.md) | English
 
-These tools match STM32 serial protocol v3. By default they receive the PA9/USART1 USB-TTL stream at 460800 bit/s and save GPS-timestamped IMU data separately from the 1 Hz GNSS navigation solution. Generated experiment data lives under `data/` and is excluded from Git.
+These tools match STM32 serial protocol v3 and separately save GPS-timestamped IMU, 1 Hz navigation, and 1 Hz RXM-RAWX observations.
 
 ## Tools
 
 | File | Purpose | Default output |
 | --- | --- | --- |
-| `capture_serial.py` | Headless capture of the current complete serial stream | Separate IMU and GNSS CSV files in `data/decoded/` |
+| `capture_serial.py` | Headless capture of the complete stream | Separate IMU, navigation, and RAWX CSV files |
 | `decode_imu_data.py` | Decode protocol-v3 IMU files and plot seven channels | `data/decoded/` |
 | `allan_noise_identification.py` | Read the canonical IMU CSV and identify Allan noise terms | `data/allan_results/` |
 
@@ -30,6 +30,7 @@ The default baud rate is 460800. `--hours 0` runs until Ctrl+C and closes the fi
 
     data\decoded\imu_gnss_time_YYYYMMDD_HHMMSS.csv
     data\decoded\gnss_nav_YYYYMMDD_HHMMSS.csv
+    data\decoded\gnss_raw_YYYYMMDD_HHMMSS.csv
 
 Optionally retain the complete STM32 stream:
 
@@ -37,7 +38,7 @@ Optionally retain the complete STM32 stream:
 
 Custom output paths:
 
-    D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --imu-output data\decoded\imu.csv --gnss-output data\decoded\gnss.csv
+    D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --imu-output data\decoded\imu.csv --gnss-output data\decoded\gnss.csv --rawx-output data\decoded\rawx.csv
 
 The capture tool reports lost IMU frames, invalid lines, and satellite records. `SAT`/`SAT_END` records are retained only in the optional raw stream rather than duplicated into the GNSS navigation table.
 
@@ -72,6 +73,9 @@ Canonical IMU CSV files produced by the capture tool or Qt monitor can be used d
     GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,hmsl_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
     SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used
     SAT_END,gps_week,gps_tow_ms,time_valid,num_svs
+    RAWX,gps_week,rcv_tow_f64hex,leap_s,rec_stat,num_meas,total_meas,rx_timer_us
+    RAWX_MEAS,gnss_id,sv_id,sig_id,freq_id,pr_f64hex,cp_f64hex,do_f32hex,lock_ms,cno,pr_std,cp_std,do_std,trk_stat
+    RAWX_END,num_meas
 
 Canonical IMU CSV:
 
@@ -82,6 +86,8 @@ Canonical GNSS CSV:
     gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,gnss_fix_ok,diff_soln,lat_deg,lon_deg,hmsl_m,h_acc_m,v_acc_m,vel_n_m_s,vel_e_m_s,vel_d_m_s,ground_speed_m_s,s_acc_m_s,pdop
 
 `time_valid=1` means GPS time is valid. Coordinates are WGS-84. The capture tool accepts complete protocol-v3 records only. Angular rates are stored in deg/h and converted to rad/s internally by the Allan tool.
+
+The RAWX CSV restores the receiver's IEEE-754 values and adds `signal` and `frequency_mhz`. GLONASS frequencies include the `freq_id` channel offset; unknown future signal IDs are retained.
 
 ## Recommendations
 

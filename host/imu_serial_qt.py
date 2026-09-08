@@ -7,6 +7,7 @@ import json
 import math
 import os
 import pathlib
+import struct
 import sys
 import time
 import urllib.parse
@@ -41,6 +42,38 @@ GNSS_COLORS = {
     4: QtGui.QColor("#dddddd"), 5: QtGui.QColor("#d98cff"),
     6: QtGui.QColor("#ff6174"),
 }
+RAWX_COLUMNS = [
+    "gps_week", "rcv_tow_s", "rx_timer_us", "leap_s", "rec_stat",
+    "epoch_num_meas", "epoch_total_meas", "gnss_id", "sv_id", "sig_id",
+    "freq_id", "signal", "frequency_mhz", "pseudorange_m",
+    "carrier_phase_cycles", "doppler_hz", "locktime_ms", "cno_dbhz",
+    "pr_stdev_m", "cp_stdev_cycles", "do_stdev_hz", "pr_valid",
+    "cp_valid", "half_cycle", "sub_half_cycle",
+]
+SIGNALS = {
+    (0, 0): ("GPS_L1CA", 1575.42), (0, 3): ("GPS_L2CL", 1227.60),
+    (0, 4): ("GPS_L2CM", 1227.60), (1, 0): ("SBAS_L1CA", 1575.42),
+    (2, 0): ("GAL_E1C", 1575.42), (2, 1): ("GAL_E1B", 1575.42),
+    (2, 5): ("GAL_E5bI", 1207.14), (2, 6): ("GAL_E5bQ", 1207.14),
+    (3, 0): ("BDS_B1I_D1", 1561.098), (3, 1): ("BDS_B1I_D2", 1561.098),
+    (3, 2): ("BDS_B2I_D1", 1207.14), (3, 3): ("BDS_B2I_D2", 1207.14),
+    (5, 0): ("QZSS_L1CA", 1575.42), (5, 4): ("QZSS_L2CM", 1227.60),
+    (5, 5): ("QZSS_L2CL", 1227.60),
+}
+
+
+def signal_name_frequency(gnss_id: int, sig_id: int,
+                          freq_id: int) -> tuple[str, float | str]:
+    if gnss_id == 6 and sig_id in (0, 2):
+        channel = freq_id - 7
+        if sig_id == 0: return "GLO_L1OF", 1602.0 + channel * 0.5625
+        return "GLO_L2OF", 1246.0 + channel * 0.4375
+    return SIGNALS.get((gnss_id, sig_id), (f"GNSS{gnss_id}_SIG{sig_id}", ""))
+
+
+def float_from_hex(value: str, size: int) -> float:
+    return struct.unpack("<d" if size == 8 else "<f",
+                         int(value, 16).to_bytes(size, "little"))[0]
 
 
 def _outside_china(lat: float, lon: float) -> bool:
@@ -154,7 +187,12 @@ class NavigationMapWidget(QtWidgets.QWidget):
         self.local_plot.showGrid(x=True, y=True, alpha=0.3); self.local_plot.setAspectLocked(True)
         self.local_plot.setLabel("left", "北向", units="m"); self.local_plot.setLabel("bottom", "东向", units="m")
         self.local_plot.setTitle("WGS-84 本地轨迹（高德 Key 未加载时使用）")
-        self.track_curve = self.local_plot.plot(pen=pg.mkPen("#45a3ff", width=2))
+        # PlotCurveItem produces long horizontal path artifacts with the
+        # Windows/PyQt5/pyqtgraph combination when a short metric track bends
+        # back in x. Independent points render the same observations reliably.
+        self.track_curve = pg.ScatterPlotItem(
+            size=4, pen=None, brush=pg.mkBrush("#45a3ff"))
+        self.local_plot.addItem(self.track_curve)
         self.position_dot = self.local_plot.plot(pen=None, symbol="o", symbolSize=12, symbolBrush="#ff5c5c")
         self.stack.addWidget(self.local_plot)
         self.web_view = None
@@ -291,9 +329,10 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self.serial_port: serial.Serial | None = None
         self.rx_buffer = bytearray(); self.discard_until_newline = False
         self.plot_paused = False
-        self.imu_stream = self.gnss_stream = None
+        self.imu_stream = self.gnss_stream = self.rawx_stream = None
         self.imu_writer: csv.writer | None = None
         self.gnss_writer: csv.writer | None = None
+        self.rawx_writer: csv.writer | None = None
         self.rows_since_flush = 0
         self.imu = {name: deque() for name in ("time", "ax", "ay", "az", "gx", "gy", "gz", "temp")}
         self.speed = {name: deque() for name in ("time", "vn", "ve", "vd", "ground")}
@@ -301,10 +340,12 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self.first_timer_us: int | None = None
         self.last_timer_us: int | None = None
         self.first_gnss_time: float | None = None
-        self.total_imu = self.total_gnss = self.lost_imu = self.invalid_lines = 0
+        self.total_imu = self.total_gnss = self.total_rawx = self.lost_imu = self.invalid_lines = 0
         self.last_dt_ms = 0.0; self.arrivals: deque[float] = deque()
         self.satellite_epoch: tuple[int, int] | None = None
         self.pending_satellites: list[dict[str, int]] = []
+        self.rawx_epoch: dict[str, int | float] | None = None
+        self.rawx_seen_header = False
         self._build_ui(); self._build_timers(); self.refresh_ports()
 
     def _build_ui(self) -> None:
@@ -319,7 +360,7 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self.pause_button = QtWidgets.QPushButton("暂停绘图"); self.pause_button.clicked.connect(self.toggle_pause); self.pause_button.setEnabled(False)
         self.clear_button = QtWidgets.QPushButton("清空曲线"); self.clear_button.clicked.connect(self.clear_data)
         self.window_spin = QtWidgets.QSpinBox(); self.window_spin.setRange(10, 3600); self.window_spin.setValue(120); self.window_spin.setSuffix(" s")
-        self.save_checkbox = QtWidgets.QCheckBox("分别保存 IMU/GNSS CSV"); self.save_checkbox.setChecked(True)
+        self.save_checkbox = QtWidgets.QCheckBox("分别保存 IMU/GNSS/RAWX CSV"); self.save_checkbox.setChecked(True)
         self.connection_label = QtWidgets.QLabel("● 未连接"); self.connection_label.setStyleSheet("color:#ff6174;font-weight:bold")
         for text, widget in (("串口", self.port_combo), ("波特率", self.baud_combo), ("窗口", self.window_spin)):
             controls.addWidget(QtWidgets.QLabel(text)); controls.addWidget(widget)
@@ -425,9 +466,12 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         try:
             imu_path = pathlib.Path(parent) / f"imu_gnss_time_{stamp}.csv"
             gnss_path = pathlib.Path(parent) / f"gnss_nav_{stamp}.csv"
+            rawx_path = pathlib.Path(parent) / f"gnss_raw_{stamp}.csv"
             self.imu_stream = imu_path.open("w", newline="", encoding="utf-8")
             self.gnss_stream = gnss_path.open("w", newline="", encoding="utf-8")
+            self.rawx_stream = rawx_path.open("w", newline="", encoding="utf-8")
             self.imu_writer = csv.writer(self.imu_stream); self.gnss_writer = csv.writer(self.gnss_stream)
+            self.rawx_writer = csv.writer(self.rawx_stream)
             self.imu_writer.writerow(["sample", "gps_week", "gps_tow_us", "time_valid", "timer_us", "time_s", "dt_s",
                 "ax_raw", "ay_raw", "az_raw", "temp_raw", "gx_raw", "gy_raw", "gz_raw",
                 "ax_m_s2", "ay_m_s2", "az_m_s2", "temp_deg_c", "gx_deg_h", "gy_deg_h", "gz_deg_h"])
@@ -435,14 +479,16 @@ class NavigationMonitor(QtWidgets.QMainWindow):
                 "flags", "flags2", "carr_soln", "gnss_fix_ok", "diff_soln", "lat_deg", "lon_deg",
                 "hmsl_m", "h_acc_m", "v_acc_m", "vel_n_m_s", "vel_e_m_s", "vel_d_m_s",
                 "ground_speed_m_s", "s_acc_m_s", "pdop"])
-            self.statusBar().showMessage(f"保存到 {imu_path.name} 和 {gnss_path.name}"); return True
+            self.rawx_writer.writerow(RAWX_COLUMNS)
+            self.statusBar().showMessage(f"保存到 {imu_path.name}、{gnss_path.name} 和 {rawx_path.name}"); return True
         except OSError as error:
             self._close_logs(); QtWidgets.QMessageBox.critical(self, "文件错误", f"无法创建数据文件：\n{error}"); return False
 
     def _close_logs(self) -> None:
-        for stream in (self.imu_stream, self.gnss_stream):
+        for stream in (self.imu_stream, self.gnss_stream, self.rawx_stream):
             if stream is not None: stream.flush(); stream.close()
-        self.imu_stream = self.gnss_stream = None; self.imu_writer = self.gnss_writer = None; self.rows_since_flush = 0
+        self.imu_stream = self.gnss_stream = self.rawx_stream = None
+        self.imu_writer = self.gnss_writer = self.rawx_writer = None; self.rows_since_flush = 0
 
     def connect_serial(self) -> None:
         device = self.port_combo.currentData()
@@ -455,10 +501,13 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         except (serial.SerialException, OSError) as error:
             self._close_logs(); QtWidgets.QMessageBox.critical(self, "串口连接失败", f"无法打开 {device}：\n{error}"); return
         self.serial_port = port; self.rx_buffer.clear(); self.discard_until_newline = True
+        # Each connection creates a new set of log files, so its live track
+        # must not be connected to coordinates retained from an earlier run.
+        self.clear_data()
         self.port_combo.setEnabled(False); self.baud_combo.setEnabled(False)
         self.save_checkbox.setEnabled(False); self.pause_button.setEnabled(True); self.connect_button.setText("断开")
         self.connection_label.setText(f"● 已连接 {device}"); self.connection_label.setStyleSheet("color:#5bd18b;font-weight:bold")
-        self.statusBar().showMessage(f"正在接收 {device}；协议 IMU/GNSS/SAT，460800 bit/s。")
+        self.statusBar().showMessage(f"正在接收 {device}；协议 IMU/GNSS/SAT/RAWX，460800 bit/s。")
 
     def disconnect_serial(self, reason: str) -> None:
         if self.serial_port is not None:
@@ -505,6 +554,12 @@ class NavigationMonitor(QtWidgets.QMainWindow):
                 self._process_sat([int(v) for v in parts[1:]])
             elif parts[0] == "SAT_END" and len(parts) == 5:
                 self._process_sat_end([int(v) for v in parts[1:]])
+            elif parts[0] == "RAWX" and len(parts) == 8:
+                self._process_rawx_header(parts)
+            elif parts[0] == "RAWX_MEAS" and len(parts) == 14:
+                self._process_rawx_measurement(parts)
+            elif parts[0] == "RAWX_END" and len(parts) == 2:
+                self.rawx_epoch = None
             else:
                 self.invalid_lines += 1
         except (ValueError, IndexError):
@@ -592,11 +647,48 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         if self.satellite_epoch == (week, tow_ms):
             self.sky_plot.set_satellites(list(self.pending_satellites))
 
+    def _process_rawx_header(self, parts: list[str]) -> None:
+        self.rawx_epoch = {
+            "gps_week": int(parts[1]), "rcv_tow_s": float_from_hex(parts[2], 8),
+            "leap_s": int(parts[3]), "rec_stat": int(parts[4]),
+            "num_meas": int(parts[5]), "total_meas": int(parts[6]),
+            "rx_timer_us": int(parts[7]),
+        }
+        self.rawx_seen_header = True
+
+    def _process_rawx_measurement(self, parts: list[str]) -> None:
+        if self.rawx_epoch is None:
+            # Opening an already-running serial stream often starts in the
+            # middle of a RAWX epoch. Ignore that startup fragment until the
+            # next header instead of reporting every measurement as invalid.
+            if not self.rawx_seen_header:
+                return
+            raise ValueError("RAWX_MEAS without RAWX header")
+        gnss_id, sv_id, sig_id, freq_id = (int(v) for v in parts[1:5])
+        pr = float_from_hex(parts[5], 8); cp = float_from_hex(parts[6], 8)
+        doppler = float_from_hex(parts[7], 4)
+        lock_ms, cno, pr_std, cp_std, do_std, trk = (int(v) for v in parts[8:])
+        signal, frequency = signal_name_frequency(gnss_id, sig_id, freq_id)
+        if self.rawx_writer is not None:
+            epoch = self.rawx_epoch
+            cp_sigma: float | str = "" if cp_std == 15 else cp_std * 0.004
+            self.rawx_writer.writerow([
+                epoch["gps_week"], epoch["rcv_tow_s"], epoch["rx_timer_us"],
+                epoch["leap_s"], epoch["rec_stat"], epoch["num_meas"],
+                epoch["total_meas"], gnss_id, sv_id, sig_id, freq_id, signal,
+                frequency, pr, cp, doppler, lock_ms, cno, 0.01 * (2 ** pr_std),
+                cp_sigma, 0.002 * (2 ** do_std), trk & 1, (trk >> 1) & 1,
+                (trk >> 2) & 1, (trk >> 3) & 1,
+            ])
+            self._periodic_flush()
+        self.total_rawx += 1
+
     def _periodic_flush(self) -> None:
         self.rows_since_flush += 1
         if self.rows_since_flush >= 100:
             if self.imu_stream is not None: self.imu_stream.flush()
             if self.gnss_stream is not None: self.gnss_stream.flush()
+            if self.rawx_stream is not None: self.rawx_stream.flush()
             self.rows_since_flush = 0
 
     def _trim_buffers(self) -> None:
@@ -628,7 +720,7 @@ class NavigationMonitor(QtWidgets.QMainWindow):
             span = self.arrivals[-1] - self.arrivals[0]
             if span > 0: rate = (len(self.arrivals) - 1) / span
         self.rate_label.setText(f"IMU: {rate:.2f} Hz · dt {self.last_dt_ms:.3f} ms" if rate else "IMU: -- Hz")
-        self.frames_label.setText(f"IMU/GNSS: {self.total_imu:,} / {self.total_gnss:,}")
+        self.frames_label.setText(f"IMU/GNSS/RAWX: {self.total_imu:,} / {self.total_gnss:,} / {self.total_rawx:,}")
         self.loss_label.setText(f"丢帧: {self.lost_imu:,} · 无效行: {self.invalid_lines:,}")
 
     def toggle_pause(self) -> None:
@@ -639,8 +731,10 @@ class NavigationMonitor(QtWidgets.QMainWindow):
     def clear_data(self) -> None:
         for channel in (*self.imu.values(), *self.speed.values()): channel.clear()
         self.last_sample = self.first_timer_us = self.last_timer_us = None
-        self.first_gnss_time = None; self.total_imu = self.total_gnss = self.lost_imu = self.invalid_lines = 0
+        self.first_gnss_time = None
+        self.total_imu = self.total_gnss = self.total_rawx = self.lost_imu = self.invalid_lines = 0
         self.last_dt_ms = 0.0; self.arrivals.clear(); self.pending_satellites = []; self.satellite_epoch = None
+        self.rawx_epoch = None; self.rawx_seen_header = False
         self.map_widget.clear_track(); self.sky_plot.set_satellites([])
         for curve in (*self.accel_curves.values(), *self.gyro_curves.values(), self.temp_curve,
                       *self.speed_curves.values()): curve.clear()

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import unittest
 
-from tools.capture_serial import GNSS_COLUMNS, parse_gnss
+from tools.capture_serial import (GNSS_COLUMNS, RAWX_COLUMNS, parse_gnss,
+                                  parse_rawx_header, parse_rawx_measurement)
 
 
 class GnssProtocolTests(unittest.TestCase):
@@ -30,6 +31,29 @@ class GnssProtocolTests(unittest.TestCase):
         row = parse_gnss(line.split(","))
 
         self.assertIsNone(row)
+
+    def test_rawx_exact_hex_and_signal_decode(self) -> None:
+        header = parse_rawx_header(
+            "RAWX,2420,405EC00000000000,18,1,1,1,987654321".split(","))
+        row = parse_rawx_measurement(
+            ("RAWX_MEAS,3,19,0,0,417C9C3800000000,4038000000000000,"
+             "C0200000,1500,45,2,3,4,3").split(","), header)
+        self.assertIsNotNone(row)
+        assert row is not None
+        self.assertEqual(len(row), len(RAWX_COLUMNS))
+        self.assertEqual(row[11:13], ["BDS_B1I_D1", 1561.098])
+        self.assertEqual(row[13:16], [30_000_000.0, 24.0, -2.5])
+        self.assertEqual(row[-4:], [1, 1, 0, 0])
+
+    def test_glonass_channel_frequency(self) -> None:
+        header = parse_rawx_header(
+            "RAWX,2420,405EC00000000000,18,1,1,1,1".split(","))
+        row = parse_rawx_measurement(
+            ("RAWX_MEAS,6,7,0,8,0000000000000000,0000000000000000,"
+             "00000000,0,0,0,15,0,1").split(","), header)
+        assert row is not None
+        self.assertEqual(row[11], "GLO_L1OF")
+        self.assertEqual(row[12], 1602.5625)
 
 
 if __name__ == "__main__":

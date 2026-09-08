@@ -2,19 +2,20 @@
 
 [中文](README.md) | [English](README_EN.md)
 
-这是一个面向低成本 GNSS/INS 的实时实验平台：STM32F103 在同一个硬件定时器时钟域内捕获 MPU6050 DATA_RDY 与 ZED-F9P 1PPS，把每个 IMU 样本标记为 GPS 周/周内微秒，同时以 1 Hz 输出 GNSS 位置、速度、PDOP 和卫星天空图数据。Qt 上位机完成实时显示、地图轨迹和 IMU/GNSS 分文件记录。
+这是一个面向低成本 GNSS/INS 的实时实验平台：STM32F103 在同一个硬件定时器时钟域内捕获 MPU6050 DATA_RDY 与 ZED-F9P 1PPS，把每个 IMU 样本标记为 GPS 周/周内微秒，同时以 1 Hz 输出 GNSS 导航解、天空图及 RAWX 原始观测。Qt 上位机完成实时显示、地图轨迹和 IMU/GNSS/RAWX 分文件记录。
 
 当前版本完成的是组合导航的同步采集与可视化基础层，尚未把松组合 EKF 或紧组合伪距/多普勒滤波写入导航解算输出。建议先用本项目完成数据质量、时间同步和杆臂标定验证，再在 `fusion/` 中加入后续算法。
 
 ## 当前能力
 
 - MPU6050：100 Hz，加速度、角速度、温度
-- F9P：内部导航 10 Hz，对 STM32 输出 NAV-PVT/NAV-SAT/TIM-TP 各 1 Hz
+- F9P：内部导航 10 Hz，对 STM32 输出 NAV-PVT/NAV-SAT/RXM-RAWX/TIM-TP 各 1 Hz
 - PA0/TIM2_CH1 捕获 GNSS PPS，PA1/TIM2_CH2 捕获 IMU DATA_RDY
 - 每条 IMU 数据直接携带 `gps_week`、`gps_tow_us` 和 `time_valid`
 - GNSS 数据包含 WGS-84 坐标、海拔、NED/地面速度、定位类型、卫星数、PDOP
 - Qt 显示 IMU 曲线、速度曲线、本地轨迹/高德地图和多星座天空图
-- Qt 与命令行工具均分别保存 IMU/GNSS CSV
+- 原始观测包含伪距、载波相位、多普勒、锁定时间、C/N0、质量位及信号/频点标识
+- Qt 与命令行工具均分别保存 IMU/GNSS导航/RAWX原始观测 CSV
 - 离线解码及Allan方差工具读取当前21列IMU v3文件
 
 ## 硬件与接线
@@ -70,6 +71,7 @@ D:\anaconda\envs\allan-toolkit\python.exe host\imu_serial_qt.py
 
 - `imu_gnss_time_*.csv`：21列IMU v3，含GPS时间、本地捕获时间、原始值和物理量
 - `gnss_nav_*.csv`：GNSS 时间、WGS-84 位置、速度、PDOP、定位类型和卫星数
+- `gnss_raw_*.csv`：逐星逐频伪距、载波相位、多普勒、质量指标和实际信号频点
 
 高德地图使用 Web JS API Key 和 `securityJsCode`。密钥只保存在本机 Qt 设置中，不应写入仓库；没有 Key 时本地米制轨迹仍正常工作。
 
@@ -95,9 +97,12 @@ IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw
 GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,hmsl_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
 SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used
 SAT_END,gps_week,gps_tow_ms,time_valid,num_svs
+RAWX,gps_week,rcv_tow_f64hex,leap_s,rec_stat,num_meas,total_meas,rx_timer_us
+RAWX_MEAS,gnss_id,sv_id,sig_id,freq_id,pr_f64hex,cp_f64hex,do_f32hex,lock_ms,cno,pr_std,cp_std,do_std,trk_stat
+RAWX_END,num_meas
 ```
 
-只有 `time_valid=1` 时GPS时间有效。`rx_timer_us` 是NAV-PVT完整通过校验时的STM32本地接收时刻；`h_acc_mm`、`v_acc_mm`、`s_acc_mms`分别是水平位置、垂直位置和速度精度。`carr_soln` 为0/1/2时分别表示无载波解、RTK浮点解、RTK固定解。F9P坐标按WGS-84保存；高德界面显示时才转换为GCJ-02。
+只有 `time_valid=1` 时GPS时间有效。`rx_timer_us` 是完整UBX帧通过校验时的STM32本地接收时刻。RAWX 浮点量用 IEEE-754 位模式十六进制无损传输，上位机恢复为 SI 数值；每个 `RAWX_MEAS` 的 `gnss_id/sig_id/freq_id` 用于识别星座与频点。固件把一个RAWX历元分散到多个100 Hz IMU周期发送，以维持串口和采样实时性。F9P坐标按WGS-84保存；高德界面显示时才转换为GCJ-02。
 
 ## 后续组合导航路线
 

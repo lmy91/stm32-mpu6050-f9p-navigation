@@ -101,8 +101,10 @@
 #define GNSS_UART_BAUD   115200u
 #define GNSS_RX_SIZE     1024u
 #define GNSS_CFG_MAX_PAYLOAD 192u
-#define UBX_MAX_PAYLOAD  1024u
+#define UBX_MAX_PAYLOAD  4096u
 #define MAX_SATELLITES   64u
+#define MAX_RAWX_MEASUREMENTS 96u
+#define RAWX_MEAS_SIZE   32u
 
 typedef struct {
     uint8_t gnss_id;
@@ -139,6 +141,17 @@ static uint16_t g_sat_gps_week;
 static uint8_t g_sat_count;
 static uint8_t g_sat_time_valid;
 static uint32_t g_sat_generation;
+/* Keep the receiver's IEEE-754 fields byte-exact. They are rendered as hex on
+ * the logger UART, avoiding slow floating-point formatting on Cortex-M3. */
+static uint8_t g_rawx_measurements[MAX_RAWX_MEASUREMENTS][RAWX_MEAS_SIZE];
+static uint64_t g_rawx_rcv_tow_bits;
+static uint64_t g_rawx_rx_timer_us;
+static uint16_t g_rawx_gps_week;
+static int8_t g_rawx_leap_s;
+static uint8_t g_rawx_rec_stat;
+static uint8_t g_rawx_count;
+static uint8_t g_rawx_total_count;
+static uint32_t g_rawx_generation;
 /* Volatile diagnostics can be inspected through ST-Link when no serial port
  * is connected: boot 0=start, 1=collecting, 0xE1=MPU not found. */
 volatile uint32_t g_debug_boot_status;
@@ -159,6 +172,8 @@ volatile uint32_t g_debug_gnss_ack_count;
 volatile uint32_t g_debug_gnss_nak_count;
 volatile uint32_t g_debug_nav_pvt_count;
 volatile uint32_t g_debug_tim_tp_count;
+volatile uint32_t g_debug_rawx_count;
+volatile uint32_t g_debug_rawx_truncated;
 volatile uint64_t g_debug_nav_rx_timer_us;
 volatile uint32_t g_debug_nav_itow_ms;
 volatile uint32_t g_debug_nav_fix_type;
@@ -394,6 +409,19 @@ static void uart_u64(uint64_t value)
     while (count) uart_putc(digits[--count]);
 }
 
+static void uart_hex32(uint32_t value)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    for (int32_t shift = 28; shift >= 0; shift -= 4)
+        uart_putc(hex[(value >> (uint32_t)shift) & 0x0Fu]);
+}
+
+static void uart_hex64(uint64_t value)
+{
+    uart_hex32((uint32_t)(value >> 32));
+    uart_hex32((uint32_t)value);
+}
+
 static void uart_i32(int32_t value)
 {
     int64_t wide = value;
@@ -430,6 +458,11 @@ static uint32_t get_le32(const uint8_t *src)
 {
     return (uint32_t)src[0] | ((uint32_t)src[1] << 8) |
            ((uint32_t)src[2] << 16) | ((uint32_t)src[3] << 24);
+}
+
+static uint64_t get_le64(const uint8_t *src)
+{
+    return (uint64_t)get_le32(src) | ((uint64_t)get_le32(src + 4u) << 32);
 }
 
 static void gnss_ubx_send(uint8_t msg_class, uint8_t msg_id,
@@ -543,6 +576,16 @@ static void gnss_send_navigation_config(void)
     gnss_valset(config, sizeof config / sizeof config[0]);
 }
 
+static void gnss_send_rawx_config(void)
+{
+    /* Keep RAWX in its own VALSET transaction. Some F9P firmware revisions
+     * reject an unrelated TP key and atomically NAK a mixed transaction. */
+    static const gnss_cfg_item_t config[] = {
+        {0x209102A5u, 10u, 1u},      /* UBX-RXM-RAWX UART1: 1 Hz */
+    };
+    gnss_valset(config, sizeof config / sizeof config[0]);
+}
+
 static void gnss_configure(void)
 {
     /* C099 normally ships at 460800 baud; bare/default F9P UART1 is 38400.
@@ -562,6 +605,8 @@ static void gnss_configure(void)
     g_gnss_rx_tail = 0u;
     __asm volatile ("cpsie i" ::: "memory");
     gnss_send_navigation_config();
+    delay_ms(20u);
+    gnss_send_rawx_config();
     delay_ms(100u);
 }
 
@@ -626,6 +671,30 @@ static void gnss_dispatch(uint8_t msg_class, uint8_t msg_id,
         __asm volatile ("cpsie i" ::: "memory");
         g_sat_count = count;
         ++g_sat_generation;
+    } else if (msg_class == 0x02u && msg_id == 0x15u && length >= 16u &&
+               payload[13] == 1u) {
+        uint8_t total = payload[11];
+        uint16_t available = (uint16_t)((length - 16u) / RAWX_MEAS_SIZE);
+        if ((uint16_t)total > available) total = (uint8_t)available;
+        uint8_t stored = total;
+        if (stored > MAX_RAWX_MEASUREMENTS) {
+            stored = MAX_RAWX_MEASUREMENTS;
+            ++g_debug_rawx_truncated;
+        }
+        g_rawx_rcv_tow_bits = get_le64(&payload[0]);
+        g_rawx_gps_week = get_le16(&payload[8]);
+        g_rawx_leap_s = (int8_t)payload[10];
+        g_rawx_rec_stat = payload[12];
+        g_rawx_rx_timer_us = rx_timer_us;
+        for (uint8_t i = 0u; i < stored; ++i) {
+            uint16_t offset = (uint16_t)(16u + (uint16_t)i * RAWX_MEAS_SIZE);
+            for (uint8_t byte = 0u; byte < RAWX_MEAS_SIZE; ++byte)
+                g_rawx_measurements[i][byte] = payload[offset + byte];
+        }
+        g_rawx_total_count = total;
+        g_rawx_count = stored;
+        ++g_debug_rawx_count;
+        ++g_rawx_generation;
     } else if (msg_class == 0x0Du && msg_id == 0x01u && length == 16u) {
         uint32_t tow_ms = get_le32(&payload[0]);
         uint16_t week = get_le16(&payload[12]);
@@ -910,7 +979,7 @@ static void print_header(void)
     uart_puts("# trigger=mpu6050_data_ready_pa1_tim2_ch2_rising\r\n");
     uart_puts("# logger_uart=usart1_pa9_460800\r\n");
     uart_puts("# f9p_uart=usart2_pa2_pa3_115200_ubx_rtcm3in\r\n");
-    uart_puts("# f9p_output=nav_pvt_1hz_nav_sat_1hz_tim_tp_1hz_gps_grid\r\n");
+    uart_puts("# f9p_output=nav_pvt_1hz_nav_sat_1hz_rxm_rawx_1hz_tim_tp_1hz_gps_grid\r\n");
     uart_puts("# sample_rate_hz=100\r\n");
     uart_puts("# accel_range_g=2\r\n");
     uart_puts("# accel_scale_lsb_per_g=16384\r\n");
@@ -923,6 +992,10 @@ static void print_header(void)
     uart_puts("# IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw\r\n");
     uart_puts("# GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,hmsl_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100\r\n");
     uart_puts("# SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used\r\n");
+    uart_puts("# RAWX,gps_week,rcv_tow_f64hex,leap_s,rec_stat,num_meas,total_meas,rx_timer_us\r\n");
+    uart_puts("# RAWX_MEAS,gnss_id,sv_id,sig_id,freq_id,pr_f64hex,cp_f64hex,do_f32hex,lock_ms,cno,pr_std,cp_std,do_std,trk_stat\r\n");
+    uart_puts("# RAWX_END,num_meas\r\n");
+    uart_puts("# rawx_float_hex=ieee754_bits_exact\r\n");
 }
 
 static uint32_t gps_time_from_local(uint64_t local_us, uint16_t *week,
@@ -1043,6 +1116,41 @@ static void print_sat_end(void)
     uart_puts("\r\n");
 }
 
+static void print_rawx_header(void)
+{
+    uart_puts("RAWX,"); uart_u32(g_rawx_gps_week);
+    uart_putc(','); uart_hex64(g_rawx_rcv_tow_bits);
+    uart_putc(','); uart_i32(g_rawx_leap_s);
+    uart_putc(','); uart_u32(g_rawx_rec_stat);
+    uart_putc(','); uart_u32(g_rawx_count);
+    uart_putc(','); uart_u32(g_rawx_total_count);
+    uart_putc(','); uart_u64(g_rawx_rx_timer_us);
+    uart_puts("\r\n");
+}
+
+static void print_rawx_measurement(const uint8_t *measurement)
+{
+    uart_puts("RAWX_MEAS,"); uart_u32(measurement[20]);
+    uart_putc(','); uart_u32(measurement[21]);
+    uart_putc(','); uart_u32(measurement[22]);
+    uart_putc(','); uart_u32(measurement[23]);
+    uart_putc(','); uart_hex64(get_le64(&measurement[0]));
+    uart_putc(','); uart_hex64(get_le64(&measurement[8]));
+    uart_putc(','); uart_hex32(get_le32(&measurement[16]));
+    uart_putc(','); uart_u32(get_le16(&measurement[24]));
+    uart_putc(','); uart_u32(measurement[26]);
+    uart_putc(','); uart_u32(measurement[27] & 0x0Fu);
+    uart_putc(','); uart_u32(measurement[28] & 0x0Fu);
+    uart_putc(','); uart_u32(measurement[29] & 0x0Fu);
+    uart_putc(','); uart_u32(measurement[30]);
+    uart_puts("\r\n");
+}
+
+static void print_rawx_end(void)
+{
+    uart_puts("RAWX_END,"); uart_u32(g_rawx_count); uart_puts("\r\n");
+}
+
 static void print_sync(uint32_t pps_count, uint64_t capture_us,
                        uint16_t week, uint32_t tow_ms, uint32_t time_valid)
 {
@@ -1074,6 +1182,11 @@ int main(void)
     uint32_t printed_nav_pvt = 0u;
     uint32_t printing_sat_generation = 0u;
     uint8_t printing_sat_index = 0u;
+    uint32_t printing_rawx_generation = 0u;
+    uint8_t printing_rawx_index = 0u;
+    uint8_t printing_rawx_state = 0u;
+    uint8_t rawx_config_attempts = 0u;
+    uint32_t next_rawx_config_ms = 0u;
 
     board_init();
     uart_init();
@@ -1110,6 +1223,15 @@ int main(void)
 
     for (;;) {
         gnss_process();
+
+        /* UART routing and receiver startup time vary across C099 revisions.
+         * Retry only until the first valid RAWX frame, then remain silent. */
+        if (g_debug_rawx_count == 0u && rawx_config_attempts < 5u &&
+            (int32_t)(millis() - next_rawx_config_ms) >= 0) {
+            gnss_send_rawx_config();
+            ++rawx_config_attempts;
+            next_rawx_config_ms = millis() + 1000u;
+        }
 
         if (g_debug_nav_pvt_count != printed_nav_pvt) {
             uint16_t week;
@@ -1182,6 +1304,25 @@ int main(void)
             } else if (printing_sat_index == g_sat_count) {
                 print_sat_end();
                 ++printing_sat_index;
+            }
+        }
+        /* RAWX can contain many dual-frequency measurements. Emit at most one
+         * RAWX record per 100 Hz IMU epoch so acquisition and UART2 parsing
+         * remain responsive. */
+        if (g_rawx_generation != printing_rawx_generation) {
+            printing_rawx_generation = g_rawx_generation;
+            printing_rawx_index = 0u;
+            printing_rawx_state = 1u;
+        }
+        if (printing_rawx_state == 1u) {
+            print_rawx_header();
+            printing_rawx_state = 2u;
+        } else if (printing_rawx_state == 2u) {
+            if (printing_rawx_index < g_rawx_count) {
+                print_rawx_measurement(g_rawx_measurements[printing_rawx_index++]);
+            } else {
+                print_rawx_end();
+                printing_rawx_state = 0u;
             }
         }
         g_debug_sample_count = sample;
