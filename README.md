@@ -15,7 +15,7 @@
 - GNSS 数据包含 WGS-84 坐标、海拔、NED/地面速度、定位类型、卫星数、PDOP
 - Qt 显示 IMU 曲线、速度曲线、本地轨迹/高德地图和多星座天空图
 - 原始观测包含伪距、载波相位、多普勒、锁定时间、C/N0、质量位及信号/频点标识
-- Qt 与命令行工具均分别保存 IMU/GNSS导航/RAWX原始观测 CSV
+- Qt 可独立选择保存 IMU/GNSS导航/RAWX原始观测 CSV，命令行工具也支持分文件记录
 - 离线解码及Allan方差工具读取当前21列IMU v3文件
 
 ## 硬件与接线
@@ -69,9 +69,10 @@ D:\anaconda\envs\allan-toolkit\python.exe host\imu_serial_qt.py
 
 选择 PA9 USB-TTL 对应端口（当前设备为 CH340 COM7）和 460800。勾选保存后，程序创建：
 
-- `imu_gnss_time_*.csv`：21列IMU v3，含GPS时间、本地捕获时间、原始值和物理量
-- `gnss_nav_*.csv`：GNSS 时间、WGS-84 位置、速度、PDOP、定位类型和卫星数
-- `gnss_raw_*.csv`：逐星逐频伪距、载波相位、多普勒、质量指标和实际信号频点
+- Qt 每次采集建立 `YYYYMMDDHHMMSS` 会话文件夹，按选择保存 `imu.csv`、`gnss.csv` 和 `rawx.csv`
+- `imu.csv`：21列IMU v3，含GPS时间、本地捕获时间、原始值和物理量
+- `gnss.csv`：GNSS 时间、WGS-84 位置、速度、PDOP、定位类型和卫星数
+- `rawx.csv`：逐星逐频伪距、载波相位、多普勒、质量指标和实际信号频点
 
 高德地图使用 Web JS API Key 和 `securityJsCode`。密钥只保存在本机 Qt 设置中，不应写入仓库；没有 Key 时本地米制轨迹仍正常工作。
 

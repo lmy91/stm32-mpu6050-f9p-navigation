@@ -176,15 +176,18 @@ class NavigationMapWidget(QtWidgets.QWidget):
         self.security_edit.setPlaceholderText("securityJsCode（如需要）"); self.security_edit.setEchoMode(QtWidgets.QLineEdit.Password)
         self.load_button = QtWidgets.QPushButton("加载高德地图")
         self.local_button = QtWidgets.QPushButton("本地轨迹")
+        self.fit_button = QtWidgets.QPushButton("最佳窗口")
         self.map_status = QtWidgets.QLabel("当前：本地轨迹")
         self.load_button.clicked.connect(self.load_amap)
         self.local_button.clicked.connect(self.show_local_map)
+        self.fit_button.clicked.connect(self.fit_track)
         bar.addWidget(self.key_edit, 2); bar.addWidget(self.security_edit, 2)
-        bar.addWidget(self.load_button); bar.addWidget(self.local_button)
+        bar.addWidget(self.load_button); bar.addWidget(self.local_button); bar.addWidget(self.fit_button)
         bar.addWidget(self.map_status); layout.addLayout(bar)
         self.stack = QtWidgets.QStackedWidget()
         self.local_plot = pg.PlotWidget(); self.local_plot.setBackground("#101418")
-        self.local_plot.showGrid(x=True, y=True, alpha=0.3); self.local_plot.setAspectLocked(True)
+        self.local_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.local_plot.setAspectLocked(True, ratio=1.0)
         self.local_plot.setLabel("left", "北向", units="m"); self.local_plot.setLabel("bottom", "东向", units="m")
         self.local_plot.setTitle("WGS-84 本地轨迹（高德 Key 未加载时使用）")
         # PlotCurveItem produces long horizontal path artifacts with the
@@ -207,6 +210,16 @@ class NavigationMapWidget(QtWidgets.QWidget):
     def show_local_map(self) -> None:
         self.stack.setCurrentWidget(self.local_plot)
         self.map_status.setText("当前：本地轨迹")
+
+    def fit_track(self) -> None:
+        """Restore an equal-scale view fitted to all collected positions."""
+        self.show_local_map()
+        self.local_plot.setAspectLocked(True, ratio=1.0)
+        if self.east_m:
+            self.local_plot.getViewBox().autoRange(padding=0.08)
+        else:
+            self.local_plot.setRange(xRange=(-5.0, 5.0), yRange=(-5.0, 5.0),
+                                     padding=0.0)
 
     def clear_track(self) -> None:
         self.origin = None; self.east_m.clear(); self.north_m.clear()
@@ -360,12 +373,20 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self.pause_button = QtWidgets.QPushButton("暂停绘图"); self.pause_button.clicked.connect(self.toggle_pause); self.pause_button.setEnabled(False)
         self.clear_button = QtWidgets.QPushButton("清空曲线"); self.clear_button.clicked.connect(self.clear_data)
         self.window_spin = QtWidgets.QSpinBox(); self.window_spin.setRange(10, 3600); self.window_spin.setValue(120); self.window_spin.setSuffix(" s")
-        self.save_checkbox = QtWidgets.QCheckBox("分别保存 IMU/GNSS/RAWX CSV"); self.save_checkbox.setChecked(True)
+        self.save_checkboxes: dict[str, QtWidgets.QCheckBox] = {}
+        for name in ("IMU", "GNSS", "RAWX"):
+            checkbox = QtWidgets.QCheckBox(name); checkbox.setChecked(True)
+            self.save_checkboxes[name] = checkbox
+        self.select_all_button = QtWidgets.QPushButton("全选")
+        self.select_all_button.clicked.connect(self.select_all_logs)
         self.connection_label = QtWidgets.QLabel("● 未连接"); self.connection_label.setStyleSheet("color:#ff6174;font-weight:bold")
         for text, widget in (("串口", self.port_combo), ("波特率", self.baud_combo), ("窗口", self.window_spin)):
             controls.addWidget(QtWidgets.QLabel(text)); controls.addWidget(widget)
-        for widget in (self.refresh_button, self.connect_button, self.pause_button, self.clear_button, self.save_checkbox):
+        for widget in (self.refresh_button, self.connect_button, self.pause_button, self.clear_button):
             controls.addWidget(widget)
+        controls.addWidget(QtWidgets.QLabel("保存:"))
+        for checkbox in self.save_checkboxes.values(): controls.addWidget(checkbox)
+        controls.addWidget(self.select_all_button)
         controls.addStretch(1); controls.addWidget(self.connection_label); outer.addLayout(controls)
 
         stats = QtWidgets.QHBoxLayout()
@@ -457,30 +478,65 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         if self.serial_port is None: self.connect_serial()
         else: self.disconnect_serial("用户断开。")
 
+    def select_all_logs(self) -> None:
+        for checkbox in self.save_checkboxes.values():
+            checkbox.setChecked(True)
+
+    def _set_log_controls_enabled(self, enabled: bool) -> None:
+        for checkbox in self.save_checkboxes.values():
+            checkbox.setEnabled(enabled)
+        self.select_all_button.setEnabled(enabled)
+
+    @staticmethod
+    def _create_session_directory(parent: pathlib.Path, stamp: str) -> pathlib.Path:
+        for index in range(1000):
+            name = stamp if index == 0 else f"{stamp}_{index:02d}"
+            directory = parent / name
+            try:
+                directory.mkdir()
+                return directory
+            except FileExistsError:
+                continue
+        raise OSError(f"无法为采集时间 {stamp} 创建唯一文件夹")
+
     def _open_logs(self) -> bool:
-        if not self.save_checkbox.isChecked(): return True
+        selected = {name for name, checkbox in self.save_checkboxes.items()
+                    if checkbox.isChecked()}
+        if not selected:
+            self.statusBar().showMessage("未选择数据文件，仅实时显示。")
+            return True
         DEFAULT_DATA_DIR.mkdir(parents=True, exist_ok=True)
         parent = QtWidgets.QFileDialog.getExistingDirectory(self, "选择数据保存目录", str(DEFAULT_DATA_DIR))
         if not parent: return False
-        stamp = time.strftime("%Y%m%d_%H%M%S")
+        stamp = time.strftime("%Y%m%d%H%M%S")
         try:
-            imu_path = pathlib.Path(parent) / f"imu_gnss_time_{stamp}.csv"
-            gnss_path = pathlib.Path(parent) / f"gnss_nav_{stamp}.csv"
-            rawx_path = pathlib.Path(parent) / f"gnss_raw_{stamp}.csv"
-            self.imu_stream = imu_path.open("w", newline="", encoding="utf-8")
-            self.gnss_stream = gnss_path.open("w", newline="", encoding="utf-8")
-            self.rawx_stream = rawx_path.open("w", newline="", encoding="utf-8")
-            self.imu_writer = csv.writer(self.imu_stream); self.gnss_writer = csv.writer(self.gnss_stream)
-            self.rawx_writer = csv.writer(self.rawx_stream)
-            self.imu_writer.writerow(["sample", "gps_week", "gps_tow_us", "time_valid", "timer_us", "time_s", "dt_s",
-                "ax_raw", "ay_raw", "az_raw", "temp_raw", "gx_raw", "gy_raw", "gz_raw",
-                "ax_m_s2", "ay_m_s2", "az_m_s2", "temp_deg_c", "gx_deg_h", "gy_deg_h", "gz_deg_h"])
-            self.gnss_writer.writerow(["gps_week", "gps_tow_ms", "time_valid", "rx_timer_us", "fix", "num_sv",
-                "flags", "flags2", "carr_soln", "gnss_fix_ok", "diff_soln", "lat_deg", "lon_deg",
-                "hmsl_m", "h_acc_m", "v_acc_m", "vel_n_m_s", "vel_e_m_s", "vel_d_m_s",
-                "ground_speed_m_s", "s_acc_m_s", "pdop"])
-            self.rawx_writer.writerow(RAWX_COLUMNS)
-            self.statusBar().showMessage(f"保存到 {imu_path.name}、{gnss_path.name} 和 {rawx_path.name}"); return True
+            directory = self._create_session_directory(pathlib.Path(parent), stamp)
+            created: list[str] = []
+            if "IMU" in selected:
+                path = directory / "imu.csv"
+                self.imu_stream = path.open("w", newline="", encoding="utf-8")
+                self.imu_writer = csv.writer(self.imu_stream)
+                self.imu_writer.writerow(["sample", "gps_week", "gps_tow_us", "time_valid", "timer_us", "time_s", "dt_s",
+                    "ax_raw", "ay_raw", "az_raw", "temp_raw", "gx_raw", "gy_raw", "gz_raw",
+                    "ax_m_s2", "ay_m_s2", "az_m_s2", "temp_deg_c", "gx_deg_h", "gy_deg_h", "gz_deg_h"])
+                created.append(path.name)
+            if "GNSS" in selected:
+                path = directory / "gnss.csv"
+                self.gnss_stream = path.open("w", newline="", encoding="utf-8")
+                self.gnss_writer = csv.writer(self.gnss_stream)
+                self.gnss_writer.writerow(["gps_week", "gps_tow_ms", "time_valid", "rx_timer_us", "fix", "num_sv",
+                    "flags", "flags2", "carr_soln", "gnss_fix_ok", "diff_soln", "lat_deg", "lon_deg",
+                    "hmsl_m", "h_acc_m", "v_acc_m", "vel_n_m_s", "vel_e_m_s", "vel_d_m_s",
+                    "ground_speed_m_s", "s_acc_m_s", "pdop"])
+                created.append(path.name)
+            if "RAWX" in selected:
+                path = directory / "rawx.csv"
+                self.rawx_stream = path.open("w", newline="", encoding="utf-8")
+                self.rawx_writer = csv.writer(self.rawx_stream)
+                self.rawx_writer.writerow(RAWX_COLUMNS)
+                created.append(path.name)
+            self.statusBar().showMessage(
+                f"保存到 {directory.name}\\" + "、".join(created)); return True
         except OSError as error:
             self._close_logs(); QtWidgets.QMessageBox.critical(self, "文件错误", f"无法创建数据文件：\n{error}"); return False
 
@@ -505,7 +561,7 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         # must not be connected to coordinates retained from an earlier run.
         self.clear_data()
         self.port_combo.setEnabled(False); self.baud_combo.setEnabled(False)
-        self.save_checkbox.setEnabled(False); self.pause_button.setEnabled(True); self.connect_button.setText("断开")
+        self._set_log_controls_enabled(False); self.pause_button.setEnabled(True); self.connect_button.setText("断开")
         self.connection_label.setText(f"● 已连接 {device}"); self.connection_label.setStyleSheet("color:#5bd18b;font-weight:bold")
         self.statusBar().showMessage(f"正在接收 {device}；协议 IMU/GNSS/SAT/RAWX，460800 bit/s。")
 
@@ -514,7 +570,7 @@ class NavigationMonitor(QtWidgets.QMainWindow):
             try: self.serial_port.close()
             except serial.SerialException: pass
         self.serial_port = None; self._close_logs(); self.port_combo.setEnabled(True); self.baud_combo.setEnabled(True)
-        self.save_checkbox.setEnabled(True); self.pause_button.setEnabled(False); self.connect_button.setText("连接")
+        self._set_log_controls_enabled(True); self.pause_button.setEnabled(False); self.connect_button.setText("连接")
         self.connection_label.setText("● 未连接"); self.connection_label.setStyleSheet("color:#ff6174;font-weight:bold")
         self.statusBar().showMessage(reason)
 

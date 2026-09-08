@@ -27,12 +27,14 @@ Alternatively, double-click host/run_imu_serial_qt.bat.
 3. Click Refresh and select the corresponding COM port.
 4. Select 460800 baud and click Connect.
 5. Use the Navigation tab for position, speed, DOP, satellites and sky view; use the IMU tab for sensor curves.
-6. Enable IMU/GNSS/RAWX logging. Three timestamped files are created automatically.
+6. Select any combination of IMU, GNSS, and RAWX logging, or click Select All. After choosing a parent directory, the monitor creates a session folder such as `20260908180500`; only selected files are created. Selecting none keeps live display without logging.
 7. Click Disconnect before unplugging USB-TTL.
 
 Pause plots stops UI refresh only; reception and enabled recording continue. Clear plots clears the display buffer without deleting saved CSV files.
 
-Each connection starts a fresh local track. Independent point rendering avoids horizontal path artifacts seen with continuous curves on some Windows/PyQtGraph combinations. The map applies no position-jump filter and displays every valid navigation point saved in `gnss_nav_*.csv`.
+Each connection starts a fresh local track. Independent point rendering avoids horizontal path artifacts seen with continuous curves on some Windows/PyQtGraph combinations. The map applies no position-jump filter and displays every valid navigation point saved in the session's `gnss.csv`.
+
+The local east/north axes use the same metric scale. After panning or zooming, click Best View to fit all collected positions while preserving that scale.
 
 ## Input and output
 
@@ -45,11 +47,13 @@ The input consists of typed records:
     RAWX_MEAS,gnss_id,sv_id,sig_id,freq_id,pr_f64hex,cp_f64hex,do_f32hex,lock_ms,cno,pr_std,cp_std,do_std,trk_stat
     RAWX_END,num_meas
 
-Logging creates three files:
+Three short-name files are available inside each session folder; only those selected before connecting are created:
 
-- `imu_gnss_time_*.csv`: GPS time, local capture time, raw IMU and physical units.
-- `gnss_nav_*.csv`: GPS time and receive time, WGS-84 position/velocity and accuracy, PDOP, fix/RTK quality, and satellite count.
-- `gnss_raw_*.csv`: per-signal pseudorange, carrier phase, Doppler, frequency, C/N0, lock time, and quality flags.
+- `imu.csv`: GPS time, local capture time, raw IMU and physical units.
+- `gnss.csv`: GPS time and receive time, WGS-84 position/velocity and accuracy, PDOP, fix/RTK quality, and satellite count.
+- `rawx.csv`: per-signal pseudorange, carrier phase, Doppler, frequency, C/N0, lock time, and quality flags.
+
+If acquisition starts twice within the same second, the next folder is suffixed with `_01` so existing data is never overwritten.
 
 The monitor accepts complete protocol-v3 records only.
 

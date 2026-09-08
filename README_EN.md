@@ -15,7 +15,7 @@ The current release implements the synchronized acquisition and visualization fo
 - WGS-84 position, altitude, NED/ground speed, fix, satellite count, and PDOP
 - Qt IMU/speed plots, local/AMap track, and multi-constellation sky plot
 - Exact pseudorange, carrier phase, Doppler, C/N0, quality flags, and signal/frequency IDs
-- Separate IMU/navigation/RAWX CSV logging from Qt and the command-line tool
+- Independently selectable IMU/navigation/RAWX CSV logging in Qt, plus separate command-line recording
 - Decoder and Allan tools for the canonical 21-column IMU v3 file
 
 ## Wiring
@@ -48,7 +48,7 @@ Flash `firmware/build/Release/mpu6050_f9p_navigation.elf`, then start:
 D:\anaconda\envs\allan-toolkit\python.exe host\imu_serial_qt.py
 ```
 
-Choose the PA9 USB-TTL port and 460800 baud. Logging creates `imu_gnss_time_*.csv`, `gnss_nav_*.csv`, and `gnss_raw_*.csv`.
+Choose the PA9 USB-TTL port and 460800 baud. Qt creates one `YYYYMMDDHHMMSS` session folder per acquisition and writes the selected `imu.csv`, `gnss.csv`, and `rawx.csv` files inside it.
 
 Command-line acquisition and analysis:
 
