@@ -24,7 +24,7 @@ NTRIP_DEFAULT_HOST = "ntrip.gnsswhu.cn"
 NTRIP_DEFAULT_PORT = 2101
 NTRIP_DEFAULT_MOUNT = "WUH200CHN0"
 
-RTCM_SEND_TIMEOUT = 2.0
+RTCM_BACKLOG_WARN_SECONDS = 2.0
 
 
 class RtcmPacket(NamedTuple):
@@ -36,16 +36,15 @@ class RtcmPacket(NamedTuple):
         received = self.ready_at if self.received_at is None else self.received_at
         return self.ready_at - received, now - self.ready_at, now - received
 
-    def check_age(self, now):
-        assembly, sending, total = self.ages(now)
-        # Caster-side MSM delivery can legitimately pause for more than ten
-        # seconds. Only local queue/UART waiting is a host blockage; assembly
-        # age is diagnostic and the receiver decides whether a correction is
-        # still usable from its GNSS epoch.
-        if sending > RTCM_SEND_TIMEOUT:
-            raise OSError(f"RTCM 发送等待超限：组包={assembly:.3f}s "
-                          f"发送等待={sending:.3f}s(限{RTCM_SEND_TIMEOUT:g}s) "
-                          f"总驻留={total:.3f}s，已停止下发")
+    def backlog_exceeded(self, now):
+        """Return whether local delivery is slow; this alone is not fatal.
+
+        RTCM arrives in bursts and one frame can remain behind the 1024-byte
+        UART credit window for more than two seconds even while STM32 ACKs are
+        advancing.  Link liveness is therefore decided by ``BridgeFlow``;
+        packet age is retained only for diagnostics.
+        """
+        return self.ages(now)[1] > RTCM_BACKLOG_WARN_SECONDS
 
 # Observation-arrival interval is NOT the GNSS measurement correction age.
 _OBSERVATION_TYPES = frozenset(
@@ -456,7 +455,6 @@ class RtcmQueue:
         with self.condition:
             while self.bytes + len(frame) > self.max_bytes:
                 if stop_event.is_set(): return
-                item.check_age(time.monotonic())
                 self.condition.wait(0.05)
             if not stop_event.is_set(): self.put_nowait(item)
 
@@ -553,7 +551,6 @@ class NtripClient(QtCore.QThread):
             item = self.frames.get_nowait()
         except queue.Empty:
             return RtcmPacket(time.monotonic(), b"")
-        item.check_age(time.monotonic())
         return item
 
     def _enqueue_ready(self, outgoing):

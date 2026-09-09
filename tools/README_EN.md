@@ -9,6 +9,7 @@ These tools match STM32 serial protocol v3 and separately save GPS-timestamped I
 | File | Purpose | Default output |
 | --- | --- | --- |
 | `capture_serial.py` | Headless capture of the complete stream | IMU, navigation, and RAWX CSV files in a session folder |
+| `decode_rawx.py` | Validate and summarize RAWX observations | Epoch completeness, signal quality, lock resets, and phase-Doppler outlier candidates |
 | `check_rtcm_bridge.py` | Bounded hardware smoke test using the same Qt forwarding code | Console counters only |
 | `inspect_f9p.py` | Read-only UBX polls over the receiver native USB port | Console summary; `--details` for per-signal data |
 | `allan_noise_identification.py` | Read the canonical IMU CSV and identify Allan noise terms | `data/allan_results/` |

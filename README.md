@@ -84,7 +84,7 @@ D:\anaconda\envs\allan-toolkit\python.exe host\imu_serial_qt.py
 
 先连接 COM7，等待 `RTCM 就绪`，在“基站设置…”填写 `ntrip.gnsswhu.cn:2101`、挂载点 `WUH200CHN0` 和账号密码，或导入你自己的 BNC 配置，再点“连接基站”。该链路不使用 BNC，避免其他程序同时注入差分数据。网络线程使用直接 TCP 连接，不继承系统 HTTP 代理；VPN 若使用 TUN/全局路由，仍需对基站域名/IP 设置直连。
 
-Qt 做 HTTP chunk 解包和 RTCM CRC24Q 校验，仅下发完整有效帧；STM32 中断转发，Qt 根据回传计数限制未确认数据为 1024 字节。缓冲有界，积压/确认超时会停止下发并显示原因，采集继续。`F9P 收/使用` 来自 UBX-RXM-RTCM，不能把网络字节数当成接收机已用差分。`距接收` 是距最后 RTCM 状态的间隔，不是观测历元差分龄期。原 GNSS v3 和三类 CSV 不变；`gnss.csv` 的 `carr_soln=1/2` 分别表示 RTK 浮点/固定，`fix=3` 本身不代表是否 RTK。
+Qt 做 HTTP chunk 解包和 RTCM CRC24Q 校验，仅下发完整有效帧；STM32 中断转发，Qt 根据回传计数限制未确认数据为 1024 字节。缓冲有界；单帧排队超过两秒只告警并继续追赶，只有 STM32 状态/确认无进展或串口写入失败才停止下发，采集继续。`F9P 收/使用` 来自 UBX-RXM-RTCM，不能把网络字节数当成接收机已用差分。`距接收` 是距最后 RTCM 状态的间隔，不是观测历元差分龄期。原 GNSS v3 和三类 CSV 不变；`gnss.csv` 的 `carr_soln=1/2` 分别表示 RTK 浮点/固定，`fix=3` 本身不代表是否 RTK。
 
 ## 命令行采集与分析
 

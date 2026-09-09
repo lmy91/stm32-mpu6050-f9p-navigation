@@ -41,7 +41,7 @@ Qt includes F9P MSM compatibility handling: if unsupported NavIC terminates an M
 
 Connect COM7 and wait for the RTCM bridge to become ready. Open the base settings, enter `ntrip.gnsswhu.cn:2101`, mountpoint `WUH200CHN0` and credentials, or import a private BNC file. Connect the base. BNC is not used in this path. Qt bypasses system HTTP proxies using direct TCP sockets; VPN TUN/global routing still requires a direct-routing exception.
 
-Qt de-chunks HTTP, validates RTCM CRC24Q and limits unacknowledged UART bytes to 1024. STM32 forwards PA10 to PA2 using interrupts. Queues are bounded and stale/failed forwarding stops without interrupting acquisition. UBX-RXM-RTCM counters distinguish network delivery from receiver reception/use. The displayed arrival interval is not measurement correction age. Existing v3 records and the three CSV files are unchanged: `carr_soln=1/2` means RTK float/fixed; `fix=3` alone does not identify RTK.
+Qt de-chunks HTTP, validates RTCM CRC24Q and limits unacknowledged UART bytes to 1024. STM32 forwards PA10 to PA2 using interrupts. Queues are bounded; a frame waiting more than two seconds warns and keeps draining, while missing STM32 status/ACK progress or UART write failure stops correction injection without interrupting acquisition. UBX-RXM-RTCM counters distinguish network delivery from receiver reception/use. The displayed arrival interval is not measurement correction age. Existing v3 records and the three CSV files are unchanged: `carr_soln=1/2` means RTK float/fixed; `fix=3` alone does not identify RTK.
 
 ## Quick start
 

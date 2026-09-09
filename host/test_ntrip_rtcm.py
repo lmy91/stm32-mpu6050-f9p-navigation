@@ -174,7 +174,7 @@ class NtripProtocolTest(unittest.TestCase):
         for body in (b"xyz\r\n", b"-1\r\n", b"1\r\naXX", b"1000001\r\n"):
             with self.assertRaises(OSError): NtripResponse().feed(header + body)
 
-    def test_queue_is_bounded_and_stale_frames_refused(self):
+    def test_queue_is_bounded_and_old_frame_age_is_diagnostic(self):
         client = NtripClient("localhost", 2101, "test", "", "")
         for _ in range(client.frames.max_bytes // len(frame())):
             client.frames.put_nowait((time.monotonic(), frame()))
@@ -182,7 +182,7 @@ class NtripProtocolTest(unittest.TestCase):
         self.assertEqual(client.take_frame(), frame())
         other = NtripClient("localhost", 2101, "test", "", "")
         other.frames.put_nowait((time.monotonic() - 3, frame()))
-        with self.assertRaises(OSError): other.take_frame()
+        self.assertEqual(other.take_frame(), frame())
 
     def test_v2_request_and_network_session_feed_valid_frames_only(self):
         data = frame(700)
@@ -301,19 +301,47 @@ class SeparateStageTimingTest(unittest.TestCase):
             self.assertIsNone(worker.source)
             self.assertTrue(client._stop_event.is_set())
             self.assertEqual(port.write.call_count, 1)  # No replay after stop.
-            self.assertIn("发送等待=2.010s", messages[0])
-            self.assertIn("串口待发=406B", messages[0])
+            diagnostics = "\n".join(messages)
+            self.assertIn("串口连续 2.010 秒未写入 RTCM", diagnostics)
+            self.assertIn("串口待发=406B", diagnostics)
 
-    def test_caster_assembly_age_is_not_local_send_stall(self):
+    def test_packet_age_is_diagnostic_and_full_queue_waits_for_space(self):
         packet = RtcmPacket(20.0, frame(), 1.0)
-        packet.check_age(21.5)
+        self.assertFalse(packet.backlog_exceeded(21.5))
+        self.assertTrue(packet.backlog_exceeded(22.01))
         self.assertEqual(packet.ages(21.5), (19.0, 1.5, 20.5))
         client = NtripClient("localhost", 2101, "test", "", "")
         client.frames.max_bytes = len(frame())
         client.frames.put_nowait(RtcmPacket(10.0, frame(), 9.0))
-        with mock.patch("ntrip_rtcm.time.monotonic", return_value=12.01):
-            with self.assertRaisesRegex(OSError, "发送等待=2.010s"):
-                client.frames.put(RtcmPacket(10.0, frame(), 9.0), client._stop_event)
+        client._stop_event.set()
+        client.frames.put(RtcmPacket(10.0, frame(), 9.0), client._stop_event)
+        self.assertEqual(client.frames.qsize(), 1)
+
+    def test_slow_but_advancing_ack_does_not_stop_after_two_seconds(self):
+        clock = [10.0]
+        with mock.patch("ntrip_rtcm.time.monotonic", side_effect=lambda: clock[0]):
+            client = NtripClient("localhost", 2101, "test", "", "")
+            for _ in range(8):
+                client.frames.put_nowait(RtcmPacket(10.0, frame()))
+            port = mock.Mock(); port.write.side_effect = len
+            worker = SerialWorker(port)
+            worker.report = report(); worker.report_at = clock[0]
+            warnings = []; worker.diagnostic.connect(warnings.append)
+            worker.set_source(client); worker._pump()
+            self.assertEqual(worker.flow.sent, 1024)
+
+            # ACK progresses, but deliberately slower than the incoming burst.
+            clock[0] = 11.1
+            worker.flow.update(report(ms=11100, rx=512, tx=512))
+            worker.report_at = clock[0]; worker._pump()
+            clock[0] = 12.2
+            worker.flow.update(report(ms=12200, rx=1024, tx=1024))
+            worker.report_at = clock[0]; worker._pump()
+
+            self.assertIs(worker.source, client)
+            self.assertFalse(client._stop_event.is_set())
+            self.assertGreater(worker.flow.sent, 1024)
+            self.assertEqual(len([m for m in warnings if "RTCM本地排队" in m]), 1)
 
     def test_missing_uart_ack_still_stops(self):
         clock = [10.0]

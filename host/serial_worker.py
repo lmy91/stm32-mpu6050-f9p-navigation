@@ -5,7 +5,7 @@ import time
 from collections import deque
 
 from PyQt5 import QtCore
-from ntrip_rtcm import BridgeFlow
+from ntrip_rtcm import BridgeFlow, RTCM_BACKLOG_WARN_SECONDS
 
 
 class SerialWorker(QtCore.QThread):
@@ -29,6 +29,8 @@ class SerialWorker(QtCore.QThread):
         self.snapshot = (0, 0, 0.0)  # sent, unacknowledged, maximum send-queue age
         self.max_send_age = 0.0
         self.timing_snapshot = (0.0, 0.0, 0.0)  # max assembly, send wait, total host residence
+        self.backlog_warning_active = False
+        self.write_stall_since = None
 
     def _capture_snapshot(self):
         now = time.monotonic()
@@ -39,6 +41,25 @@ class SerialWorker(QtCore.QThread):
         self.max_send_age = maxima[1]
         if self.flow is not None:
             self.snapshot = (self.flow.sent, self.flow.sent - self.flow.acked, self.max_send_age)
+
+    def _warn_slow_backlog(self, now):
+        """Report burst backlog once, without mistaking it for a dead link."""
+        if not self.pending:
+            self.backlog_warning_active = False
+            return
+        assembly, sending, total = self.pending[0].ages(now)
+        if sending > RTCM_BACKLOG_WARN_SECONDS:
+            if not self.backlog_warning_active:
+                flow = self.flow
+                outstanding = flow.sent - flow.acked if flow is not None else 0
+                self.diagnostic.emit(
+                    f"预警：RTCM本地排队 {sending:.3f}s（阈值{RTCM_BACKLOG_WARN_SECONDS:g}s），"
+                    f"但STM32状态/转发确认保护未触发，继续下发；"
+                    f"组包={assembly:.3f}s 总驻留={total:.3f}s "
+                    f"未确认={outstanding}B 待发={sum(len(item.data) for item in self.pending)}B")
+                self.backlog_warning_active = True
+        elif sending < RTCM_BACKLOG_WARN_SECONDS / 2:
+            self.backlog_warning_active = False
 
     def set_source(self, source):
         with self.lock: self.requested_source = source
@@ -111,6 +132,8 @@ class SerialWorker(QtCore.QThread):
         with self.lock: requested = self.requested_source
         if requested is not self.source:
             self.source = requested; self.flow = None; self.pending.clear()
+            self.backlog_warning_active = False
+            self.write_stall_since = None
             self.max_send_age = 0.0
             self.timing_snapshot = (0.0, 0.0, 0.0)
             if requested is not None:
@@ -134,12 +157,20 @@ class SerialWorker(QtCore.QThread):
             if self.pending:
                 self._capture_snapshot()
                 now = time.monotonic()
-                for item in self.pending: item.check_age(now)
+                self._warn_slow_backlog(now)
                 if credit:
+                    if (self.write_stall_since is not None
+                            and now - self.write_stall_since > RTCM_BACKLOG_WARN_SECONDS):
+                        raise OSError(
+                            f"串口连续 {now-self.write_stall_since:.3f} 秒未写入 RTCM，已停止下发")
                     batch = b"".join(item.data for item in self.pending)[:credit]
                     count = len(batch)
                     written = self.port.write(batch)
                     if not 0 <= written <= count: raise OSError("串口返回无效发送字节数")
+                    if written:
+                        self.write_stall_since = None
+                    elif self.write_stall_since is None:
+                        self.write_stall_since = now
                     self.flow.record_write(written)
                     remaining = written
                     while remaining:
@@ -148,6 +179,9 @@ class SerialWorker(QtCore.QThread):
                             self.pending.appendleft(item._replace(data=item.data[remaining:]))
                             break
                         remaining -= len(item.data)
+            else:
+                self.backlog_warning_active = False
+                self.write_stall_since = None
             self.snapshot = (self.flow.sent, self.flow.sent - self.flow.acked, self.max_send_age)
         except (OSError, ValueError) as error:
             # On ambiguous write failure never replay a possibly written prefix.

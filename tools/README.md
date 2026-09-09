@@ -9,6 +9,7 @@
 | 文件 | 用途 | 默认输出 |
 | --- | --- | --- |
 | `capture_serial.py` | 无界面采集 | 会话文件夹中的 IMU、GNSS导航、RAWX CSV |
+| `decode_rawx.py` | 校验并汇总 RAWX 原始观测 | 历元完整性、信号质量、锁定回退和相位-多普勒异常候选 |
 | `check_rtcm_bridge.py` | 调用同一 Qt 代码短时检查 RTCM 链路 | 控制台统计，不生成文件 |
 | `inspect_f9p.py` | 在 F9P 原生 USB 口只读查询 UBX 状态 | 控制台摘要，`--details` 显示逐信号状态 |
 | `allan_noise_identification.py` | 直接读取标准 IMU CSV，辨识 Allan 随机误差 | `data/allan_results/` |
