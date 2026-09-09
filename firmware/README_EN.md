@@ -13,6 +13,7 @@ This directory contains STM32F103C8T6 firmware for synchronized MPU6050/ZED-F9P 
 - Data ready: PA1/TIM2_CH2, rising-edge input capture
 - GNSS UART: PA2/USART2_TX and PA3/USART2_RX at 115200 bit/s
 - Output: PA9/USART1_TX, 460800 bit/s
+- RTCM input: PA10/USART1_RX at 460800 bit/s, interrupt-forwarded to PA2/F9P
 - Nominal output rate: approximately 100 Hz
 - Startup: acquisition begins automatically after power-up or reset
 
@@ -30,19 +31,30 @@ This directory contains STM32F103C8T6 firmware for synchronized MPU6050/ZED-F9P 
 | C099 TX_ZED | PA3/USART2_RX |
 | C099 GND | GND |
 | USB-TTL RX | PA9 |
+| USB-TTL TX (3.3 V TTL) | PA10 |
 | USB-TTL GND | GND |
 | ST-LINK SWDIO | PA13/SWDIO |
 | ST-LINK SWCLK | PA14/SWCLK |
 | ST-LINK GND | GND |
 | ST-LINK 3.3V | 3.3V |
 
-Keep BOOT0 low and use a common ground. USB-TTL TX is not required. Avoid feeding the board VCC from multiple power sources.
+Keep BOOT0 low and use a common ground. USB-TTL TX must connect to PA10 for RTCM injection. Avoid feeding the board VCC from multiple power sources.
 
 Place exactly one C099 J4 jumper in `ARDUINO MODE` (pins 7-8, silkscreen `ARD`) so PA2 can drive ZED-F9P RXD. Do not populate the `UART1` or `UART3` routing jumpers at the same time.
 
 At every boot the MCU configures F9P UART1 for 115200 bit/s, UBX/RTCM3 input and UBX-only output. Internal measurements/navigation remain at 10 Hz; UBX-NAV-PVT, UBX-NAV-SAT, and UBX-TIM-TP are each output at 1 Hz. TIMEPULSE uses the GPS grid at 1 Hz with a 100 ms active-high pulse aligned to integer TOW.
 
 ## Build
+
+RTCM bridging opens only after startup configuration/retries, preventing UBX configuration bytes from interleaving with corrections. A 2048-byte interrupt-driven queue forwards PA10 to PA2. Use the new Qt credit-controlled sender, not unrestricted BNC output to COM7. F9P performs RTK; STM32 does not. Startup settings are RAM-only and do not require changing native USB configuration.
+
+Every approximately 100 ms, PA9 outputs a comment record; the v3 data/CSV formats are unchanged:
+
+```text
+#RTCM,uptime_ms,ready,rx_bytes,tx_bytes,dropped_bytes,uart_errors,gnss_rx_overruns,f9p_frames,f9p_used,f9p_crc_errors,station_id,msg_type,last_rx_age_ms
+```
+
+Counters are cumulative 32-bit values since boot. `tx_bytes` counts writes to the UART data register, not receiver confirmation. `f9p_*` are UBX-RXM-RTCM reports; age `4294967295` means none received. Qt limits outstanding bytes to 1024 and stops on errors or two-second confirmation/status timeouts. CLI capture ignores these comment records; no fourth CSV is created. Receiver acceptance/use does not guarantee an RTK fix. See the [u-blox interface specification](https://content.u-blox.com/sites/default/files/documents/u-blox-F9-HPG-1.32_InterfaceDescription_UBX-22008968.pdf).
 
 CMake, Ninja, and the GNU Arm Embedded Toolchain are required. Add the tool bundles installed by the STM32Cube VS Code extension to the current PowerShell session:
 

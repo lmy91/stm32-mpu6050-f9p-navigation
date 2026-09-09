@@ -28,6 +28,7 @@ mx.scratch/
 /host/map_key.txt
 *.key
 *.secret
+*.bnc
 .env
 
 # Local IDE, OS, and temporary files

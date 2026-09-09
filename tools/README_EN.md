@@ -9,9 +9,19 @@ These tools match STM32 serial protocol v3 and separately save GPS-timestamped I
 | File | Purpose | Default output |
 | --- | --- | --- |
 | `capture_serial.py` | Headless capture of the complete stream | IMU, navigation, and RAWX CSV files in a session folder |
+| `check_rtcm_bridge.py` | Bounded hardware smoke test using the same Qt forwarding code | Console counters only |
+| `inspect_f9p.py` | Read-only UBX polls over the receiver native USB port | Console summary; `--details` for per-signal data |
 | `allan_noise_identification.py` | Read the canonical IMU CSV and identify Allan noise terms | `data/allan_results/` |
 
 ## Install
+
+`check_rtcm_bridge.py --seconds 180 --stall-gui` deliberately pauses GUI handling for half a second every ten seconds while the serial thread keeps running. Statistics include reconnects, byte-queue peak, maximum send-queue age and RTCM MSM headers. MSM epochs retain their constellation time scales: add 14 seconds to BDS for GPST; GLONASS combines day of week and time of day and cannot be directly subtracted from GPS TOW. The printed ECEF position belongs to the reference station, not the rover.
+
+`python tools/inspect_f9p.py COM3` sends only UBX polls, not VALSET, reset or RTCM. Verify the native USB port first; do not substitute the STM32 COM7. A false `config_response_received` means no configuration response was received, not that the settings equal zero.
+
+`capture_serial.py` remains capture-only and ignores the new `#RTCM` comment reports. Use Qt for normal NTRIP injection; never open COM7 in two programs simultaneously.
+
+After closing Qt and stopping other correction injectors, run `python tools/check_rtcm_bridge.py COM7 --seconds 40 --bnc <private-config-path>` to test the real Qt path. Without `--bnc`, it only reads acquisition statistics. The test writes no files, credentials or coordinates. Exit code 2 means the base-enabled test did not meet error-free, loss-free capture and positive receiver-feedback checks; it is not by itself proof of a UART defect.
 
 Run from the repository root:
 

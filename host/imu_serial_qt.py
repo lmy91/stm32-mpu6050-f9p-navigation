@@ -23,6 +23,9 @@ import pyqtgraph as pg
 import serial
 from PyQt5 import QtCore, QtGui, QtWidgets
 from serial.tools import list_ports
+from serial_worker import SerialWorker
+from ntrip_rtcm import (BridgeFlow, NtripClient, NtripSettingsDialog,
+                       NTRIP_DEFAULT_HOST, NTRIP_DEFAULT_PORT, NTRIP_DEFAULT_MOUNT)
 
 try:
     from PyQt5 import QtWebEngineWidgets
@@ -358,9 +361,11 @@ class NavigationMonitor(QtWidgets.QMainWindow):
                 self.settings.setValue(setting_name, legacy_settings.value(setting_name))
         self.setWindowTitle("MPU6050/F9P 实时同步导航采集系统"); self.resize(1560, 980)
         self.serial_port: serial.Serial | None = None
+        self.serial_worker = None
         self.rx_buffer = bytearray(); self.discard_until_newline = False
         self.plot_paused = False
         self.imu_stream = self.gnss_stream = self.rawx_stream = None
+        self.event_stream = None
         self.imu_writer: csv.writer | None = None
         self.gnss_writer: csv.writer | None = None
         self.rawx_writer: csv.writer | None = None
@@ -377,7 +382,17 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self.pending_satellites: list[dict[str, int]] = []
         self.rawx_epoch: dict[str, int | float] | None = None
         self.rawx_seen_header = False
+        self.gnss_diagnostics = {}
+        self.ntrip_client = None
+        self.ntrip_workers = []
+        self.ntrip_password = str(self.settings.value("ntrip_password", ""))
+        self.bridge_report = None
+        self.bridge_report_at = 0.0
+        self._ntrip_interrupted_at = None
+        self._logged_fix = None
+        self._logged_errors = (0, 0)
         self._build_ui(); self._build_timers(); self.refresh_ports()
+        self.log_event("系统", "程序已启动；界面保留最近 5000 条，勾选 LOG 可随采集保存，也可手动导出。")
 
     def _build_ui(self) -> None:
         pg.setConfigOptions(antialias=False, background="#101418", foreground="#d8dee9")
@@ -392,9 +407,10 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self.clear_button = QtWidgets.QPushButton("清空曲线"); self.clear_button.clicked.connect(self.clear_data)
         self.window_spin = QtWidgets.QSpinBox(); self.window_spin.setRange(10, 3600); self.window_spin.setValue(120); self.window_spin.setSuffix(" s")
         self.save_checkboxes: dict[str, QtWidgets.QCheckBox] = {}
-        for name in ("IMU", "GNSS", "RAWX"):
-            checkbox = QtWidgets.QCheckBox(name); checkbox.setChecked(True)
+        for name in ("IMU", "GNSS", "RAWX", "LOG"):
+            checkbox = QtWidgets.QCheckBox(name); checkbox.setChecked(name != "LOG")
             self.save_checkboxes[name] = checkbox
+        self.save_checkboxes["LOG"].setToolTip("连接前勾选：本次日志保存到采集文件夹中的 event.log")
         self.select_all_button = QtWidgets.QPushButton("全选")
         self.select_all_button.clicked.connect(self.select_all_logs)
         self.connection_label = QtWidgets.QLabel("● 未连接"); self.connection_label.setStyleSheet("color:#ff6174;font-weight:bold")
@@ -416,10 +432,129 @@ class NavigationMonitor(QtWidgets.QMainWindow):
                       self.fix_label, self.sv_label, self.pdop_label):
             label.setMinimumWidth(135); stats.addWidget(label)
         stats.addStretch(1); outer.addLayout(stats)
+        ntrip_controls = QtWidgets.QHBoxLayout()
+        self.ntrip_settings_button = QtWidgets.QPushButton("基站设置…")
+        self.ntrip_settings_button.clicked.connect(self.configure_ntrip)
+        self.ntrip_button = QtWidgets.QPushButton("连接基站")
+        self.ntrip_button.clicked.connect(self.toggle_ntrip)
+        self.ntrip_label = QtWidgets.QLabel("基站: 未连接（Qt 直连，不使用系统 HTTP 代理）")
+        ntrip_controls.addWidget(self.ntrip_settings_button); ntrip_controls.addWidget(self.ntrip_button)
+        ntrip_controls.addWidget(self.ntrip_label, 1); outer.addLayout(ntrip_controls)
+        self.rtcm_label = QtWidgets.QLabel("RTCM: 等待 STM32 转发状态；USB-TTL TX 须接 PA10")
+        self.rtcm_label.setWordWrap(True)
+        self.rtcm_label.setToolTip("STM32/F9P 计数自下位机启动累计，包括启动配置阶段。关注测试期间增量。距接收不是观测历元差分龄期。")
+        outer.addWidget(self.rtcm_label)
         self.tabs = QtWidgets.QTabWidget(); self.tabs.addTab(self._build_navigation_tab(), "导航")
-        self.tabs.addTab(self._build_imu_tab(), "IMU"); outer.addWidget(self.tabs, 1)
+        self.tabs.addTab(self._build_imu_tab(), "IMU")
+        self.tabs.addTab(self._build_event_log_tab(), "日志")
+        outer.addWidget(self.tabs, 1)
         self.setCentralWidget(central)
         self.statusBar().showMessage("选择 PA9 对应的 USB-TTL 串口，默认 460800 bit/s。")
+
+    def _build_event_log_tab(self) -> QtWidgets.QWidget:
+        page = QtWidgets.QWidget(); layout = QtWidgets.QVBoxLayout(page)
+        controls = QtWidgets.QHBoxLayout()
+        self.log_follow = QtWidgets.QCheckBox("自动滚动"); self.log_follow.setChecked(True)
+        controls.addWidget(self.log_follow)
+        for title, callback in (("复制日志", self.copy_event_log),
+                                ("导出日志…", self.export_event_log),
+                                ("清空日志", self.clear_event_log)):
+            button = QtWidgets.QPushButton(title); button.clicked.connect(callback)
+            controls.addWidget(button)
+        controls.addStretch(1)
+        self.event_save_label = QtWidgets.QLabel("本机时间 · 界面最近 5000 条 · LOG 未保存")
+        controls.addWidget(self.event_save_label)
+        layout.addLayout(controls)
+        self.event_log = QtWidgets.QPlainTextEdit()
+        self.event_log.setReadOnly(True)
+        self.event_log.setMaximumBlockCount(5000)
+        self.event_log.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
+        layout.addWidget(self.event_log)
+        return page
+
+    def log_event(self, category: str, message: str) -> None:
+        # UI-thread events only: never append every IMU/RTCM packet.
+        message = " ".join(str(message).splitlines())[:2000]
+        bar = self.event_log.verticalScrollBar(); previous = bar.value()
+        stamp = QtCore.QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz")
+        line = f"{stamp} [{category}] {message}"
+        self.event_log.appendPlainText(line)
+        bar.setValue(bar.maximum() if self.log_follow.isChecked() else previous)
+        if self.event_stream is not None:
+            try:
+                self.event_stream.write(line + "\n")
+                self.event_stream.flush()  # Low-rate events only, independent of CSV row counts.
+            except OSError as error:
+                self._event_save_failed(error)
+
+    def _event_save_failed(self, error: OSError) -> None:
+        stream, self.event_stream = self.event_stream, None
+        if stream is not None:
+            try: stream.close()
+            except OSError: pass
+        self.event_save_label.setText("LOG 保存失败，请检查磁盘；采集继续")
+        self.statusBar().showMessage(f"LOG 保存失败：{error}；请手动导出界面日志。")
+        # The stream is disabled first, so this cannot recurse on a write failure.
+        self.log_event("文件错误", f"LOG 保存失败：{error}；后续仅显示，CSV 采集继续。")
+
+    def clear_event_log(self) -> None:
+        self.event_log.clear()
+
+    def copy_event_log(self) -> None:
+        QtWidgets.QApplication.clipboard().setText(self.event_log.toPlainText())
+
+    def export_event_log(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "导出当前日志", f"navigation_{time.strftime('%Y%m%d%H%M%S')}.log",
+            "日志文件 (*.log);;文本文件 (*.txt)")
+        if not path: return
+        if (self.event_stream is not None and
+                pathlib.Path(path).resolve() == pathlib.Path(self.event_stream.name).resolve()):
+            QtWidgets.QMessageBox.warning(self, "日志正在保存", "不能覆盖正在写入的 event.log，请选择其他文件。")
+            return
+        try:
+            pathlib.Path(path).write_text(self.event_log.toPlainText() + "\n", encoding="utf-8")
+        except OSError as error:
+            self.log_event("错误", f"日志导出失败：{error}")
+            QtWidgets.QMessageBox.warning(self, "导出失败", str(error))
+
+    def _set_ntrip_status(self, message: str) -> None:
+        self.ntrip_label.setText(message)
+        now = time.monotonic()
+        if "后重连" in message:
+            if self._ntrip_interrupted_at is None: self._ntrip_interrupted_at = now
+            self.log_event("基站重连", message)
+        elif "收到有效 RTCM" in message:
+            extra = ""
+            if self._ntrip_interrupted_at is not None:
+                extra = f"；距首次报错 {now - self._ntrip_interrupted_at:.1f} 秒（非差分龄期）"
+            self._ntrip_interrupted_at = None
+            self.log_event("基站", message + extra)
+        else:
+            self.log_event("基站", message)
+
+    def _log_link_debug(self, message: str) -> None:
+        self.log_event("NTRIP调试", message)
+        worker = self.serial_worker
+        if worker is None:
+            self.log_event("链路调试", "无串口线程")
+            return
+        sent, pending, max_age = worker.snapshot
+        detail = (f"串口线程运行={int(worker.isRunning())} 已写/未确认={sent}/{pending}B "
+                  f"历史最大发送等待={max_age:.2f}s GUI接收待处理={worker.received.qsize()}块(每块≤4096B) "
+                  f"GUI行缓存={len(self.rx_buffer)}B；IMU/GNSS/RAWX="
+                  f"{self.total_imu}/{self.total_gnss}/{self.total_rawx} "
+                  f"丢帧/无效行={self.lost_imu}/{self.invalid_lines}；{self.fix_label.text()}")
+        assembly, sending, total = worker.timing_snapshot
+        detail += f"；历史最大组包/发送等待/总驻留={assembly:.3f}/{sending:.3f}/{total:.3f}s"
+        report = worker.report  # Replaced, never mutated by the serial owner.
+        if report is not None:
+            detail += (f"；距串口ACK={time.monotonic()-worker.report_at:.2f}s "
+                       f"STM32运行={report[0]}ms 就绪={report[1]} 收/转发={report[2]}/{report[3]}B "
+                       f"丢字节/串口错/GNSS溢出={report[4]}/{report[5]}/{report[6]} "
+                       f"F9P收/使用/CRC错={report[7]}/{report[8]}/{report[9]} "
+                       f"站号/类型={report[10]}/{report[11]}（设备计数自启动累计）")
+        self.log_event("链路调试", detail + "；异步近似快照，非同一时刻原子采样")
 
     @staticmethod
     def _configure_plot(plot: pg.PlotItem, title: str, y_name: str, units: str) -> None:
@@ -518,9 +653,12 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         raise OSError(f"无法为采集时间 {stamp} 创建唯一文件夹")
 
     def _open_logs(self) -> bool:
+        self.event_save_label.setText("本机时间 · 界面最近 5000 条 · LOG 未保存")
+        self.event_save_label.setToolTip("")
         selected = {name for name, checkbox in self.save_checkboxes.items()
                     if checkbox.isChecked()}
         if not selected:
+            self.log_event("记录", "未选择数据文件，仅实时显示。")
             self.statusBar().showMessage("未选择数据文件，仅实时显示。")
             return True
         DEFAULT_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -530,6 +668,12 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         try:
             directory = self._create_session_directory(pathlib.Path(parent), stamp)
             created: list[str] = []
+            if "LOG" in selected:
+                path = directory / "event.log"
+                self.event_stream = path.open("w", encoding="utf-8", newline="\n")
+                self.event_save_label.setText("LOG 保存中：event.log（完整会话，不限 5000 条）")
+                self.event_save_label.setToolTip(str(path))
+                created.append(path.name)
             if "IMU" in selected:
                 path = directory / "imu.csv"
                 self.imu_stream = path.open("w", newline="", encoding="utf-8")
@@ -553,9 +697,13 @@ class NavigationMonitor(QtWidgets.QMainWindow):
                 self.rawx_writer = csv.writer(self.rawx_stream)
                 self.rawx_writer.writerow(RAWX_COLUMNS)
                 created.append(path.name)
+            self.log_event("记录", f"数据目录：{directory}；文件：" + "、".join(created))
+            if "LOG" in selected and self.event_stream is None:
+                raise OSError("LOG 初始写入失败，未开始采集")
             self.statusBar().showMessage(
                 f"保存到 {directory.name}\\" + "、".join(created)); return True
         except OSError as error:
+            self.log_event("错误", f"创建数据文件失败：{error}")
             self._close_logs(); QtWidgets.QMessageBox.critical(self, "文件错误", f"无法创建数据文件：\n{error}"); return False
 
     def _close_logs(self) -> None:
@@ -563,6 +711,16 @@ class NavigationMonitor(QtWidgets.QMainWindow):
             if stream is not None: stream.flush(); stream.close()
         self.imu_stream = self.gnss_stream = self.rawx_stream = None
         self.imu_writer = self.gnss_writer = self.rawx_writer = None; self.rows_since_flush = 0
+        if self.event_stream is not None:
+            self.log_event("记录", "本次采集文件关闭，LOG 记录结束。")
+            if self.event_stream is not None:
+                try:
+                    self.event_stream.close()
+                except OSError as error:
+                    self._event_save_failed(error)
+                else:
+                    self.event_stream = None
+                    self.event_save_label.setText("LOG 已保存并关闭")
 
     def connect_serial(self) -> None:
         device = self.port_combo.currentData()
@@ -573,32 +731,132 @@ class NavigationMonitor(QtWidgets.QMainWindow):
             port = serial.Serial(device, int(self.baud_combo.currentText()), timeout=0, write_timeout=0)
             port.dtr = False; port.rts = False; port.reset_input_buffer()
         except (serial.SerialException, OSError) as error:
+            self.log_event("串口错误", f"无法打开 {device}：{error}")
             self._close_logs(); QtWidgets.QMessageBox.critical(self, "串口连接失败", f"无法打开 {device}：\n{error}"); return
         self.serial_port = port; self.rx_buffer.clear(); self.discard_until_newline = True
+        self.bridge_report = None; self.bridge_report_at = 0.0
         # Each connection creates a new set of log files, so its live track
         # must not be connected to coordinates retained from an earlier run.
         self.clear_data()
+        self._start_serial_worker(port)
         self.port_combo.setEnabled(False); self.baud_combo.setEnabled(False)
         self._set_log_controls_enabled(False); self.pause_button.setEnabled(True); self.connect_button.setText("断开")
         self.connection_label.setText(f"● 已连接 {device}"); self.connection_label.setStyleSheet("color:#5bd18b;font-weight:bold")
+        self.log_event("串口", f"已连接 {device} / {self.baud_combo.currentText()} bit/s")
         self.statusBar().showMessage(f"正在接收 {device}；协议 IMU/GNSS/SAT/RAWX，460800 bit/s。")
 
     def disconnect_serial(self, reason: str) -> None:
-        if self.serial_port is not None:
+        was_connected = self.serial_port is not None or self.serial_worker is not None
+        if was_connected and "异常" in reason: self._log_link_debug(reason)
+        self.stop_ntrip("基站: 已停止")
+        if self.serial_worker is not None:
+            worker = self.serial_worker
+            worker.stop()
+            if not worker.wait(1000):
+                self.statusBar().showMessage("正在等待串口线程安全退出…")
+                QtCore.QTimer.singleShot(100, lambda: self.disconnect_serial(reason))
+                return
+            # Drain already-received data before closing CSV files.
+            while not worker.received.empty(): self.poll_serial()
+            self.serial_worker = None
+            worker.deleteLater()
+        elif self.serial_port is not None:
             try: self.serial_port.close()
             except serial.SerialException: pass
+        if was_connected: self.log_event("串口", reason + "；正在关闭数据文件。")
         self.serial_port = None; self._close_logs(); self.port_combo.setEnabled(True); self.baud_combo.setEnabled(True)
         self._set_log_controls_enabled(True); self.pause_button.setEnabled(False); self.connect_button.setText("连接")
         self.connection_label.setText("● 未连接"); self.connection_label.setStyleSheet("color:#ff6174;font-weight:bold")
         self.statusBar().showMessage(reason)
 
-    def poll_serial(self) -> None:
-        if self.serial_port is None: return
+    def _start_serial_worker(self, port):
+        self.serial_worker = SerialWorker(port, self)
+        worker = self.serial_worker
+        worker.diagnostic.connect(lambda message, source=worker:
+                                  self.log_event("串口即时调试", message)
+                                  if source is self.serial_worker else None)
+        worker.failed.connect(lambda message, source=worker:
+                              self.disconnect_serial(f"串口异常：{message}")
+                              if source is self.serial_worker else None)
+        worker.rtcm_failed.connect(lambda source, message:
+                                   self.stop_ntrip(f"基站: {message}")
+                                   if source is self.ntrip_client else None)
+        worker.start()
+
+    def configure_ntrip(self) -> bool:
+        dialog = NtripSettingsDialog(self.settings, self)
+        dialog.pass_edit.setText(self.ntrip_password)
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return False
+        self.ntrip_password = dialog.pass_edit.text()
+        return True
+
+    def toggle_ntrip(self) -> None:
+        if self.ntrip_client is not None:
+            self.stop_ntrip("基站: 已停止，IMU/GNSS 采集继续")
+            return
+        if self.serial_port is None or self.serial_worker is None:
+            QtWidgets.QMessageBox.warning(self, "先连接采集串口", "请先连接 STM32 对应的 COM7。")
+            return
+        if self.bridge_report is None or time.monotonic() - self.bridge_report_at > 1:
+            QtWidgets.QMessageBox.warning(self, "缺少转发状态", "请烧录支持 RTCM 的新固件，等待转发状态出现。")
+            return
+        if not self.settings.value("ntrip_user", "") and not self.configure_ntrip():
+            return
         try:
-            waiting = self.serial_port.in_waiting
-            if waiting: self.rx_buffer.extend(self.serial_port.read(waiting))
-        except (serial.SerialException, OSError) as error:
-            self.disconnect_serial(f"串口异常断开：{error}"); return
+            # Recheck freshness after the modal settings dialog.
+            if time.monotonic() - self.bridge_report_at > 1:
+                raise ValueError("STM32 状态已过期，请等待串口恢复")
+            BridgeFlow(self.bridge_report)  # preliminary UI validation; worker rechecks live ACK
+            client = NtripClient(str(self.settings.value("ntrip_host", NTRIP_DEFAULT_HOST)),
+                                 int(self.settings.value("ntrip_port", NTRIP_DEFAULT_PORT)),
+                                 str(self.settings.value("ntrip_mount", NTRIP_DEFAULT_MOUNT)),
+                                 str(self.settings.value("ntrip_user", "")), self.ntrip_password, self)
+        except (ValueError, OSError) as error:
+            self.log_event("基站错误", f"无法启动基站：{error}")
+            QtWidgets.QMessageBox.warning(self, "无法启动基站", str(error)); return
+        self.ntrip_client = client; self.ntrip_workers.append(client)
+        self.serial_worker.set_source(client)
+        client.status.connect(lambda message, source=client:
+                              self._set_ntrip_status(message) if source is self.ntrip_client else None)
+        client.diagnostic.connect(lambda message, source=client:
+                                  self._log_link_debug(message) if source is self.ntrip_client else None)
+        client.finished.connect(lambda source=client: self._ntrip_finished(source))
+        self.ntrip_button.setText("停止基站"); self.ntrip_settings_button.setEnabled(False)
+        self._ntrip_interrupted_at = None
+        self._set_ntrip_status("基站: 正在直连 NTRIP…")
+        client.start()
+
+    def _ntrip_finished(self, client) -> None:
+        if client in self.ntrip_workers: self.ntrip_workers.remove(client)
+        if self.ntrip_client is client: self.stop_ntrip("基站: 网络线程已退出")
+        client.deleteLater()
+
+    def stop_ntrip(self, reason: str) -> None:
+        was_active = self.ntrip_client is not None
+        if was_active: self._log_link_debug(reason)
+        if self.serial_worker is not None: self.serial_worker.set_source(None)
+        if self.ntrip_client is not None: self.ntrip_client.stop()
+        self.ntrip_client = None
+        self.ntrip_button.setText("连接基站"); self.ntrip_settings_button.setEnabled(True)
+        self.ntrip_label.setText(reason)
+        if was_active: self.log_event("基站", reason)
+        self._ntrip_interrupted_at = None
+
+    def _process_rtcm_status(self, line: str) -> None:
+        try:
+            report = [int(value) for value in line.split(",")[1:]]
+            if len(report) != 13 or any(value < 0 or value > 0xFFFFFFFF for value in report):
+                raise ValueError("Invalid RTCM status")
+        except ValueError:
+            self.invalid_lines += 1; return
+        self.bridge_report = report; self.bridge_report_at = time.monotonic()
+        # Credit is handled by the serial thread immediately on reception,
+        # independently of GUI plots, dialogs and CSV processing.
+
+    def poll_serial(self) -> None:
+        if self.serial_worker is None: return
+        self.rx_buffer.extend(self.serial_worker.take_received())
         if self.discard_until_newline:
             newline = self.rx_buffer.find(b"\n")
             if newline < 0:
@@ -617,7 +875,13 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         try: line = raw.decode("ascii")
         except UnicodeDecodeError:
             self.invalid_lines += 1; return
-        if line.startswith("#"): return
+        if line.startswith("#RTCM,"):
+            self._process_rtcm_status(line); return
+        if line.startswith("#"):
+            if line.startswith("# booting"): self.log_event("设备", "收到 STM32 启动消息。")
+            if line.startswith("# booting") and self.ntrip_client is not None:
+                self.stop_ntrip("基站: STM32 重启，请等待就绪后重新连接")
+            return
         parts = line.split(",")
         try:
             if parts[0] == "IMU" and len(parts) == 13:
@@ -670,6 +934,8 @@ class NavigationMonitor(QtWidgets.QMainWindow):
          s_acc_mms, pdop) = values
         gnss_fix_ok = flags & 0x01
         diff_soln = (flags >> 1) & 0x01
+        self.gnss_diagnostics = {"tow_ms": tow_ms, "flags": flags, "carr_soln": carr_soln,
+                                 "diff_soln": diff_soln, "hacc_mm": h_acc_mm}
         h_acc_m = h_acc_mm / 1000.0
         v_acc_m = v_acc_mm / 1000.0
         s_acc_m_s = s_acc_mms / 1000.0
@@ -691,6 +957,11 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         quality = f" / {carrier}" if carrier else ""
         if gnss_fix_ok == 0: quality += " / 解无效"
         self.fix_label.setText(f"定位: {fix_names.get(fix, str(fix))}{quality}")
+        state = (fix, carr_soln, gnss_fix_ok, diff_soln)
+        if state != self._logged_fix:
+            self.log_event("定位", f"W{week} {tow_ms / 1000:.3f}s · "
+                           f"{self.fix_label.text()} · 差分 {diff_soln} · hAcc {h_acc_m:.3f} m")
+            self._logged_fix = state
         self.sv_label.setText(f"卫星数: {num_sv}"); self.pdop_label.setText(f"PDOP: {pdop / 100.0:.2f}")
         self.lat_value.setText(f"{lat:.9f}°"); self.lon_value.setText(f"{lon:.9f}°")
         self.height_value.setText(f"{height:.3f} m"); self.speed_value.setText(f"{velocities[3]:.3f} m/s")
@@ -789,6 +1060,11 @@ class NavigationMonitor(QtWidgets.QMainWindow):
             self.speed_plot.setXRange(-float(self.window_spin.value()), 0.0, padding=0.0)
 
     def update_stats(self) -> None:
+        errors = (self.lost_imu, self.invalid_lines)
+        if errors != self._logged_errors:
+            if any(a > b for a, b in zip(errors, self._logged_errors)):
+                self.log_event("采集警告", f"累计 IMU 丢帧 {errors[0]}；无效行 {errors[1]}（本次统计窗口合并报告）")
+            self._logged_errors = errors
         rate = 0.0
         if len(self.arrivals) >= 2:
             span = self.arrivals[-1] - self.arrivals[0]
@@ -796,6 +1072,26 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self.rate_label.setText(f"IMU: {rate:.2f} Hz · dt {self.last_dt_ms:.3f} ms" if rate else "IMU: -- Hz")
         self.frames_label.setText(f"IMU/GNSS/RAWX: {self.total_imu:,} / {self.total_gnss:,} / {self.total_rawx:,}")
         self.loss_label.setText(f"丢帧: {self.lost_imu:,} · 无效行: {self.invalid_lines:,}")
+        if self.bridge_report is not None:
+            r = self.bridge_report
+            ready = "就绪" if r[1] else "初始化中"
+            if time.monotonic() - self.bridge_report_at > 2: ready = "状态超时"
+            network = ""
+            if self.ntrip_client is not None:
+                c = self.ntrip_client
+                queued, peak, age = c.frames.snapshot()
+                network = (f"网络 {c.network_bytes:,} B/{c.frame_count} 帧 CRC错 {c.crc_errors} "
+                           f"重连 {c.reconnects} 排队 {queued} B/{age:.2f}s · ")
+                self.rtcm_label.setToolTip(
+                    f"STM32/F9P 计数自启动累计；关注本次增量。队列峰值 {peak} B。\n"
+                    f"F9P MSM兼容：移除 NavIC {c.msm_adapter.filtered} 帧，"
+                    f"修正历元结束标志 {c.msm_adapter.rewritten} 次；观测数值不改。\n"
+                    "距接收是状态消息到达间隔，不是观测历元差分龄期。")
+            age = "--" if r[12] == 0xFFFFFFFF else f"{r[12] / 1000:.1f}s"
+            self.rtcm_label.setText(
+                f"RTCM {ready} · {network}STM32 收/转发 {r[2]:,}/{r[3]:,} B · "
+                f"丢字节/串口错 {r[4]}/{r[5]} · F9P 收/使用 {r[7]}/{r[8]} 帧 "
+                f"CRC错 {r[9]} · 站号 {r[10]} 消息 {r[11]} · 距接收 {age} · GNSS溢出 {r[6]}")
 
     def toggle_pause(self) -> None:
         self.plot_paused = not self.plot_paused
@@ -803,6 +1099,8 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self.statusBar().showMessage("绘图暂停，串口接收和文件保存仍继续。" if self.plot_paused else "绘图已继续。")
 
     def clear_data(self) -> None:
+        self._logged_fix = None
+        self._logged_errors = (0, 0)
         for channel in (*self.imu.values(), *self.speed.values()): channel.clear()
         self.last_sample = self.first_timer_us = self.last_timer_us = None
         self.first_gnss_time = None
@@ -815,7 +1113,12 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self.update_stats()
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # noqa: N802
-        self.disconnect_serial("应用已关闭。"); event.accept()
+        self.disconnect_serial("应用已关闭。")
+        if self.serial_worker is not None or any(worker.isRunning() for worker in self.ntrip_workers):
+            for worker in self.ntrip_workers: worker.stop()
+            event.ignore()
+            QtCore.QTimer.singleShot(100, self.close)
+        else: event.accept()
 
 
 def main() -> None:

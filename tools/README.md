@@ -9,9 +9,19 @@
 | 文件 | 用途 | 默认输出 |
 | --- | --- | --- |
 | `capture_serial.py` | 无界面采集 | 会话文件夹中的 IMU、GNSS导航、RAWX CSV |
+| `check_rtcm_bridge.py` | 调用同一 Qt 代码短时检查 RTCM 链路 | 控制台统计，不生成文件 |
+| `inspect_f9p.py` | 在 F9P 原生 USB 口只读查询 UBX 状态 | 控制台摘要，`--details` 显示逐信号状态 |
 | `allan_noise_identification.py` | 直接读取标准 IMU CSV，辨识 Allan 随机误差 | `data/allan_results/` |
 
 ## 安装
+
+`check_rtcm_bridge.py --stall-gui` 每十秒暂停 GUI 处理半秒，检查独立串口线程是否继续转发。输出重连次数、字节队列峰值、最长发送排队时间及基站 MSM 头信息；可用 `--seconds 180` 做三分钟压力测试。MSM 的 `epoch_raw_ms` 保留原星座时间尺度：北斗转 GPS 需加 14 秒，GLONASS 字段为星期/日内毫秒组合，不能直接与 GPS 周内毫秒相减。测试摘要中的基站 ECEF 坐标是公开基站坐标，不输出流动站坐标。
+
+`python tools/inspect_f9p.py COM3` 仅查询接收机原生 USB 的状态/配置，不写 VALSET、不复位、不注入 RTCM。`config_response_received=false` 表示本次没有收到配置查询响应，不能当作配置值为零；COM3 必须由设备枚举确认，不能用 COM7 替代。
+
+`capture_serial.py` 保持纯采集，不建立 NTRIP 连接；它会忽略新固件的 `#RTCM` 反馈注释。日常 NTRIP 下发使用 Qt 的“连接基站”，不要同时用两个程序打开 COM7。
+
+关闭 Qt 后，可用 `python tools/check_rtcm_bridge.py COM7 --seconds 40 --bnc <你的私有配置路径>` 验证同一 Qt 转发代码。先停止 BNC 等其他差分注入源。省略 `--bnc` 时只读采集统计，不下发数据。测试不创建 CSV/raw 文件夹，不打印密码或位置坐标；输出接收、转发、丢帧、定位状态与 F9P 反馈，退出码 2 表示带基站测试未满足无丢帧、无错误且 F9P 收到数据的检查条件，不代表一定是串口故障。
 
 在仓库根目录运行：
 

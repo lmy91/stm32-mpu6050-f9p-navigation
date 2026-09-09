@@ -13,6 +13,7 @@
 - 数据就绪：PA1/TIM2_CH2，上升沿硬件捕获
 - GNSS 串口：PA2/USART2_TX、PA3/USART2_RX，115200 bit/s
 - 串口输出：PA9/USART1_TX，460800 bit/s
+- 差分输入：PA10/USART1_RX，同为 460800 bit/s，经中断缓冲转发到 PA2/F9P
 - 标称输出频率：约 100 Hz
 - 程序启动方式：上电或复位后自动采集
 
@@ -30,17 +31,32 @@
 | C099 TX_ZED | PA3/USART2_RX |
 | C099 GND | GND |
 | USB-TTL RX | PA9 |
+| USB-TTL TX（3.3V TTL） | PA10 |
 | USB-TTL GND | GND |
 | ST-LINK SWDIO | PA13/SWDIO |
 | ST-LINK SWCLK | PA14/SWCLK |
 | ST-LINK GND | GND |
 | ST-LINK 3.3V | 3.3V |
 
-保持 BOOT0=0。所有设备必须共地。USB-TTL 的 TX 不需要连接；不要让多个电源同时向开发板 VCC 反向供电。
+保持 BOOT0=0。所有设备必须共地。RTCM 下发需要 USB-TTL TX 接 PA10；不要让多个电源同时向开发板 VCC 反向供电。
 
 C099 的 J4 必须只在 `ARDUINO MODE`（7-8，板上丝印 `ARD`）放置跳帽，才能让 STM32 的 PA2 驱动 ZED-F9P RXD。`ARD`、`UART1`、`UART3` 三个位置只能选择一个。
 
-STM32 每次启动会把 F9P UART1 配置到 115200 bit/s，允许 UBX/RTCM3 输入，只输出 UBX；内部测量与导航保持 10 Hz，`UBX-NAV-PVT`、`UBX-NAV-SAT` 和 `UBX-TIM-TP` 均输出 1 Hz。TIMEPULSE 为 GPS 时间网格、1 Hz、100 ms 高电平、上升沿对齐周内整秒。配置首先写入 RAM；本次部署也已通过 C099 COM4 写入 BBR/Flash。
+STM32 每次启动会把 F9P UART1 配置到 115200 bit/s，允许 UBX/RTCM3 输入，只输出 UBX；内部测量与导航保持 10 Hz，`UBX-NAV-PVT`、`UBX-NAV-SAT`、`UBX-RXM-RAWX` 和 `UBX-TIM-TP` 均输出 1 Hz。TIMEPULSE 为 GPS 时间网格、1 Hz、100 ms 高电平、上升沿对齐周内整秒。启动配置仅写 RAM，不要求修改 F9P USB 或 BBR/Flash。
+
+## RTCM 转发与反馈
+
+启动配置/RAWX 重试完成后才开放桥接，防止 UBX 配置字节插入 RTCM 帧。USART1 RX 中断接收原始 RTCM 二进制字节，2048 字节环形队列经 USART2 TXE 中断发送；转发中不做阻塞等待。必须使用带流控的新 Qt，不能用 BNC 向 COM7 无限制灌流。CRC24Q 校验在 Qt 完成，STM32 不解算 RTK；RTK 仍由 F9P 内部执行。
+
+每约 100 ms 在 PA9 输出一条注释状态行，原 v3 数据不变：
+
+```text
+#RTCM,uptime_ms,ready,rx_bytes,tx_bytes,dropped_bytes,uart_errors,gnss_rx_overruns,f9p_frames,f9p_used,f9p_crc_errors,station_id,msg_type,last_rx_age_ms
+```
+
+所有计数自 STM32 启动累计，32 位回绕。`tx_bytes` 表示已送入 USART2 数据寄存器，不代表 F9P 已收到。`f9p_*` 来自 UBX-RXM-RTCM，`last_rx_age_ms=4294967295` 表示尚无反馈。Qt 用确认计数将未确认字节限制为 1024；两秒无确认/状态超时或新增丢字节会停止下发。状态行不保存为第四个 CSV，命令行采集器按注释忽略。
+
+接收状态字段及配置键参考 [u-blox F9 HPG 1.32 接口文档](https://content.u-blox.com/sites/default/files/documents/u-blox-F9-HPG-1.32_InterfaceDescription_UBX-22008968.pdf)。并非所有收到的 RTCM 消息都会被 F9P 使用；有接收/使用计数仍不保证立即固定。
 
 ## 编译
 

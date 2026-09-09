@@ -86,6 +86,75 @@ class SerialProtocolTest(unittest.TestCase):
             self.assertEqual(first.name, "20260908180500")
             self.assertEqual(second.name, "20260908180500_01")
 
+    def test_log_only_saves_full_session_independent_of_display(self):
+        m = self.monitor
+        for name, checkbox in m.save_checkboxes.items(): checkbox.setChecked(name == "LOG")
+        m.log_event("测试", "OLD_SESSION")
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(QtWidgets.QFileDialog, "getExistingDirectory", return_value=directory):
+                self.assertTrue(m._open_logs())
+            session = next(pathlib.Path(directory).iterdir())
+            for i in range(5005): m.log_event("测试", f"CURRENT_{i}")
+            self.assertNotIn("CURRENT_0\n", m.event_log.toPlainText())
+            m.clear_event_log()
+            m.log_event("测试", "AFTER_CLEAR")
+            # Flush does not depend on any IMU/GNSS rows arriving.
+            self.assertIn("AFTER_CLEAR", (session / "event.log").read_text(encoding="utf-8"))
+            m._close_logs()
+            text = (session / "event.log").read_text(encoding="utf-8")
+            self.assertIn("CURRENT_0\n", text)
+            self.assertIn("CURRENT_5004", text)
+            self.assertNotIn("OLD_SESSION", text)
+            self.assertIn("LOG 记录结束", text)
+            self.assertEqual({p.name for p in session.iterdir()}, {"event.log"})
+            self.assertIsNone(m.event_stream)
+
+    def test_select_all_creates_four_files_and_protects_active_log(self):
+        m = self.monitor
+        self.assertFalse(m.save_checkboxes["LOG"].isChecked())
+        m.select_all_logs()
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(QtWidgets.QFileDialog, "getExistingDirectory", return_value=directory):
+                self.assertTrue(m._open_logs())
+            session = next(pathlib.Path(directory).iterdir())
+            path = session / "event.log"
+            before = path.read_text(encoding="utf-8")
+            with (mock.patch.object(QtWidgets.QFileDialog, "getSaveFileName", return_value=(str(path), "")),
+                  mock.patch.object(QtWidgets.QMessageBox, "warning") as warning):
+                m.export_event_log()
+                warning.assert_called_once()
+            self.assertEqual(before, path.read_text(encoding="utf-8"))
+            m._close_logs()
+            self.assertEqual({p.name for p in session.iterdir()},
+                             {"imu.csv", "gnss.csv", "rawx.csv", "event.log"})
+
+    def test_log_write_failure_does_not_recurse_or_close_csv(self):
+        m = self.monitor
+        stream = mock.Mock()
+        stream.write.side_effect = OSError("disk full")
+        m.event_stream = stream
+        csv_stream = mock.Mock()
+        m.imu_stream = csv_stream
+        m.log_event("测试", "hello")
+        self.assertIsNone(m.event_stream)
+        self.assertIn("LOG 保存失败", m.event_log.toPlainText())
+        csv_stream.close.assert_not_called()
+        stream.write.assert_called_once()
+        m.imu_stream = None
+
+    def test_log_connection_failure_is_saved(self):
+        m = self.monitor
+        for name, checkbox in m.save_checkboxes.items(): checkbox.setChecked(name == "LOG")
+        m.port_combo.clear(); m.port_combo.addItem("TEST", "TEST")
+        with tempfile.TemporaryDirectory() as directory:
+            with (mock.patch.object(QtWidgets.QFileDialog, "getExistingDirectory", return_value=directory),
+                  mock.patch("imu_serial_qt.serial.Serial", side_effect=OSError("port unavailable")),
+                  mock.patch.object(QtWidgets.QMessageBox, "critical")):
+                m.connect_serial()
+            path = next(pathlib.Path(directory).iterdir()) / "event.log"
+            self.assertIn("port unavailable", path.read_text(encoding="utf-8"))
+            self.assertIsNone(m.event_stream)
+
     def test_best_view_keeps_equal_axis_scale(self):
         self.monitor.map_widget.set_position(30.0, 114.0)
         self.monitor.map_widget.set_position(30.0001, 114.0002)

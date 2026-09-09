@@ -17,6 +17,7 @@
 - 原始观测包含伪距、载波相位、多普勒、锁定时间、C/N0、质量位及信号/频点标识
 - Qt 可独立选择保存 IMU/GNSS导航/RAWX原始观测 CSV，命令行工具也支持分文件记录
 - Allan方差工具直接读取采集器生成的当前21列IMU v3文件
+- Qt 直连 NTRIP v2，经同一个 COM7 将 RTCM3 下发到 STM32，再由 PA2 转发给 F9P；显示各级接收/转发计数及 RTK 浮点/固定状态
 
 ## 硬件与接线
 
@@ -30,9 +31,10 @@
 | C099 RX_ZED | PA2/USART2_TX |
 | C099 GND | GND |
 | USB-TTL RX/GND | PA9/GND |
+| USB-TTL TX（3.3V TTL） | PA10/USART1_RX |
 | ST-LINK | PA13 SWDIO、PA14 SWCLK、3.3V、GND |
 
-所有设备必须共地。USB-TTL 只需接 PA9→RX 与 GND，电脑采集口为 460800 bit/s；F9P 与 STM32 之间仍为 115200 bit/s。保持 BOOT0=0。
+所有设备必须共地。USB-TTL RX 接 PA9，TX 接 PA10，电脑口为 460800 bit/s；F9P 与 STM32 之间为 115200 bit/s。保持 BOOT0=0，C099 J4 仅选择 `ARD`，不要同时短接 `UART1`/`UART3`。纯采集可以不接 PA10，RTCM 下发必须接。
 
 ## 数据链路
 
@@ -41,7 +43,7 @@ MPU6050 DATA_RDY ──PA1/TIM2_CH2──┐
                                  ├─ STM32 时间关联 ─PA9/460800─ Qt/CLI
 F9P 1PPS ─────────PA0/TIM2_CH1───┤
 F9P UBX ──────────PA3/USART2_RX──┘
-RTCM/配置 ────────PA2/USART2_TX──→ F9P
+WUH2 ──NTRIP── Qt ──COM7/PA10── STM32 ──PA2/USART2_TX──→ F9P
 ```
 
 ## 快速开始
@@ -75,6 +77,14 @@ D:\anaconda\envs\allan-toolkit\python.exe host\imu_serial_qt.py
 - `rawx.csv`：逐星逐频伪距、载波相位、多普勒、质量指标和实际信号频点
 
 高德地图使用 Web JS API Key 和 `securityJsCode`。密钥只保存在本机 Qt 设置中，不应写入仓库；没有 Key 时本地米制轨迹仍正常工作。
+
+### WUH2 实时 RTK
+
+当前 Qt 包含 F9P MSM 历元兼容处理：WUH2 若把组结束标志放在 F9P 不支持的 NavIC MSM 上，会等待完整组到达，去掉 NavIC，给最后一条保留的 MSM 设置结束标志并重算 CRC。其他观测位不变，普通已正确结束的组不修改。该处理不影响 IMU/GNSS/RAWX CSV，也不需要升级 F9P 或重刷 STM32。详见 [上位机说明](host/README.md)。
+
+先连接 COM7，等待 `RTCM 就绪`，在“基站设置…”填写 `ntrip.gnsswhu.cn:2101`、挂载点 `WUH200CHN0` 和账号密码，或导入你自己的 BNC 配置，再点“连接基站”。该链路不使用 BNC，避免其他程序同时注入差分数据。网络线程使用直接 TCP 连接，不继承系统 HTTP 代理；VPN 若使用 TUN/全局路由，仍需对基站域名/IP 设置直连。
+
+Qt 做 HTTP chunk 解包和 RTCM CRC24Q 校验，仅下发完整有效帧；STM32 中断转发，Qt 根据回传计数限制未确认数据为 1024 字节。缓冲有界，积压/确认超时会停止下发并显示原因，采集继续。`F9P 收/使用` 来自 UBX-RXM-RTCM，不能把网络字节数当成接收机已用差分。`距接收` 是距最后 RTCM 状态的间隔，不是观测历元差分龄期。原 GNSS v3 和三类 CSV 不变；`gnss.csv` 的 `carr_soln=1/2` 分别表示 RTK 浮点/固定，`fix=3` 本身不代表是否 RTK。
 
 ## 命令行采集与分析
 

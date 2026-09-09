@@ -100,6 +100,7 @@
 #define DEBUG_UART_BAUD  460800u
 #define GNSS_UART_BAUD   115200u
 #define GNSS_RX_SIZE     1024u
+#define RTCM_TX_SIZE     2048u /* Qt limits unacknowledged bytes to 1024. */
 #define GNSS_CFG_MAX_PAYLOAD 192u
 #define UBX_MAX_PAYLOAD  4096u
 #define MAX_SATELLITES   64u
@@ -135,6 +136,12 @@ static volatile uint8_t g_gnss_rx[GNSS_RX_SIZE];
 static volatile uint32_t g_gnss_rx_time_low[GNSS_RX_SIZE];
 static volatile uint16_t g_gnss_rx_head;
 static volatile uint16_t g_gnss_rx_tail;
+static volatile uint8_t g_rtcm_tx[RTCM_TX_SIZE];
+static volatile uint16_t g_rtcm_head, g_rtcm_tail;
+static volatile uint32_t g_rtcm_ready, g_rtcm_received, g_rtcm_forwarded;
+static volatile uint32_t g_rtcm_dropped, g_rtcm_uart_errors;
+static uint32_t g_rtcm_f9p_count, g_rtcm_used, g_rtcm_crc_errors, g_rtcm_last_ms;
+static uint16_t g_rtcm_station, g_rtcm_type;
 static satellite_t g_satellites[MAX_SATELLITES];
 static uint32_t g_sat_itow_ms;
 static uint16_t g_sat_gps_week;
@@ -258,10 +265,30 @@ void TIM2_IRQHandler(void)
     TIM2_SR = ~(status & (TIM_UIF | TIM_CC1IF | TIM_CC2IF));
 }
 
+void USART1_IRQHandler(void)
+{
+    uint32_t status = USART1_SR;
+    if (status & (USART_RXNE | USART_ORE | 0x07u)) {
+        uint8_t byte = (uint8_t)USART1_DR;
+        if (status & (USART_ORE | 0x07u)) ++g_rtcm_uart_errors;
+        if (!(status & USART_RXNE)) return;
+        ++g_rtcm_received;
+        uint16_t next = (uint16_t)((g_rtcm_head + 1u) & (RTCM_TX_SIZE - 1u));
+        if (!g_rtcm_ready || next == g_rtcm_tail || (status & 0x07u)) {
+            ++g_rtcm_dropped;
+            return;
+        }
+        g_rtcm_tx[g_rtcm_head] = byte;
+        g_rtcm_head = next;
+        USART2_CR1 |= USART_TXE; /* TXEIE */
+    }
+}
+
 void USART2_IRQHandler(void)
 {
     uint32_t status = USART2_SR;
     if (status & (USART_RXNE | USART_ORE)) {
+        if (status & USART_ORE) ++g_debug_gnss_rx_overruns;
         uint8_t byte = (uint8_t)USART2_DR;
         uint16_t head = g_gnss_rx_head;
         uint16_t next = (uint16_t)((head + 1u) & (GNSS_RX_SIZE - 1u));
@@ -271,6 +298,13 @@ void USART2_IRQHandler(void)
             g_gnss_rx_time_low[head] = (uint32_t)timer_now_unlocked();
             g_gnss_rx_head = next;
         }
+    }
+    if ((USART2_CR1 & USART_TXE) && (USART2_SR & USART_TXE)) {
+        if (g_rtcm_tail != g_rtcm_head) {
+            USART2_DR = g_rtcm_tx[g_rtcm_tail];
+            g_rtcm_tail = (uint16_t)((g_rtcm_tail + 1u) & (RTCM_TX_SIZE - 1u));
+            ++g_rtcm_forwarded;
+        } else USART2_CR1 &= ~USART_TXE;
     }
 }
 static uint32_t millis(void) { return g_ms; }
@@ -330,7 +364,8 @@ static void uart_init(void)
     GPIOA_CRH = (GPIOA_CRH & ~((0xFu << 4) | (0xFu << 8))) |
                 (0x9u << 4) | (0x4u << 8);
     USART1_BRR = (g_pclk2_hz + DEBUG_UART_BAUD / 2u) / DEBUG_UART_BAUD;
-    USART1_CR1 = (1u << 13) | (1u << 3) | (1u << 2);
+    USART1_CR1 = (1u << 13) | (1u << 5) | (1u << 3) | (1u << 2);
+    NVIC_ISER1 = (1u << (37u - 32u));
 }
 
 static void gnss_uart_init(uint32_t baud)
@@ -607,6 +642,11 @@ static void gnss_configure(void)
     gnss_send_navigation_config();
     delay_ms(20u);
     gnss_send_rawx_config();
+    /* Separate transaction: diagnostic keys must not cause a RAWX config NAK. */
+    static const gnss_cfg_item_t rtcm_status[] = {
+        {0x20910269u, 1u, 1u}, /* UBX-RXM-RTCM UART1: every input message */
+    };
+    gnss_valset(rtcm_status, sizeof rtcm_status / sizeof rtcm_status[0]);
     delay_ms(100u);
 }
 
@@ -628,6 +668,15 @@ static void gnss_dispatch(uint8_t msg_class, uint8_t msg_id,
     if (msg_class == 0x05u && length == 2u) {
         if (msg_id == 0x01u) ++g_debug_gnss_ack_count;
         else if (msg_id == 0x00u) ++g_debug_gnss_nak_count;
+    } else if (msg_class == 0x02u && msg_id == 0x32u && length == 8u) {
+        ++g_rtcm_f9p_count;
+        g_rtcm_last_ms = millis();
+        if (payload[1] & 1u) ++g_rtcm_crc_errors;
+        else {
+            g_rtcm_station = get_le16(&payload[4]);
+            g_rtcm_type = get_le16(&payload[6]);
+            if (payload[0] >= 2u && ((payload[1] >> 1) & 3u) == 2u) ++g_rtcm_used;
+        }
     } else if (msg_class == 0x01u && msg_id == 0x07u && length >= 92u) {
         uint8_t flags = payload[21];
         g_debug_nav_rx_timer_us = rx_timer_us;
@@ -1171,6 +1220,31 @@ static void print_sync(uint32_t pps_count, uint64_t capture_us,
     uart_puts("\r\n");
 }
 
+static void print_rtcm_status(void)
+{
+    uint32_t received, forwarded, dropped, uart_errors;
+    __asm volatile ("cpsid i" ::: "memory");
+    received = g_rtcm_received;
+    forwarded = g_rtcm_forwarded;
+    dropped = g_rtcm_dropped;
+    uart_errors = g_rtcm_uart_errors;
+    __asm volatile ("cpsie i" ::: "memory");
+    uart_puts("#RTCM,"); uart_u32(millis());
+    uart_putc(','); uart_u32(g_rtcm_ready);
+    uart_putc(','); uart_u32(received);
+    uart_putc(','); uart_u32(forwarded);
+    uart_putc(','); uart_u32(dropped);
+    uart_putc(','); uart_u32(uart_errors);
+    uart_putc(','); uart_u32(g_debug_gnss_rx_overruns);
+    uart_putc(','); uart_u32(g_rtcm_f9p_count);
+    uart_putc(','); uart_u32(g_rtcm_used);
+    uart_putc(','); uart_u32(g_rtcm_crc_errors);
+    uart_putc(','); uart_u32(g_rtcm_station);
+    uart_putc(','); uart_u32(g_rtcm_type);
+    uart_putc(','); uart_u32(g_rtcm_f9p_count ? millis() - g_rtcm_last_ms : UINT32_MAX);
+    uart_puts("\r\n");
+}
+
 int main(void)
 {
     uint8_t status = 0u;
@@ -1187,6 +1261,7 @@ int main(void)
     uint8_t printing_rawx_state = 0u;
     uint8_t rawx_config_attempts = 0u;
     uint32_t next_rawx_config_ms = 0u;
+    uint32_t next_rtcm_status_ms = 0u;
 
     board_init();
     uart_init();
@@ -1226,11 +1301,18 @@ int main(void)
 
         /* UART routing and receiver startup time vary across C099 revisions.
          * Retry only until the first valid RAWX frame, then remain silent. */
-        if (g_debug_rawx_count == 0u && rawx_config_attempts < 5u &&
+        if (!g_rtcm_ready && g_debug_rawx_count == 0u && rawx_config_attempts < 5u &&
             (int32_t)(millis() - next_rawx_config_ms) >= 0) {
             gnss_send_rawx_config();
             ++rawx_config_attempts;
             next_rawx_config_ms = millis() + 1000u;
+        }
+        /* Finish startup retries before opening the bridge. No synchronous
+         * UBX writes may interleave with RTCM bytes after this point. */
+        if (g_debug_rawx_count != 0u || rawx_config_attempts >= 5u) g_rtcm_ready = 1u;
+        if ((int32_t)(millis() - next_rtcm_status_ms) >= 0) {
+            print_rtcm_status();
+            next_rtcm_status_ms = millis() + 100u;
         }
 
         if (g_debug_nav_pvt_count != printed_nav_pvt) {

@@ -17,6 +17,7 @@ The current release implements the synchronized acquisition and visualization fo
 - Exact pseudorange, carrier phase, Doppler, C/N0, quality flags, and signal/frequency IDs
 - Independently selectable IMU/navigation/RAWX CSV logging in Qt, plus separate command-line recording
 - Allan analysis directly reads the canonical 21-column IMU v3 files produced during capture
+- Direct NTRIP v2 reception in Qt, credit-controlled RTCM forwarding through STM32, and receiver-reported RTK status
 
 ## Wiring
 
@@ -30,8 +31,17 @@ The current release implements the synchronized acquisition and visualization fo
 | C099 RX_ZED | PA2/USART2_TX |
 | C099 GND | GND |
 | USB-TTL RX/GND | PA9/GND |
+| USB-TTL TX (3.3 V TTL) | PA10/USART1_RX |
 
-All devices must share ground. The PC logger uses PA9 at 460800 bit/s; the F9P UART remains at 115200 bit/s.
+All devices must share ground. The PC link uses PA9/PA10 at 460800 bit/s; the F9P UART remains at 115200 bit/s. Select only C099 J4 `ARD`, not `UART1`/`UART3` simultaneously. PA10 is required for RTCM injection.
+
+## WUH2 RTK
+
+Qt includes F9P MSM compatibility handling: if unsupported NavIC terminates an MSM group, it waits for the complete group, omits NavIC and moves the end-of-group flag to the last retained MSM, recalculating CRC. All other observation bits remain unchanged; normally terminated groups are untouched. This does not change the CSV schema or require reflashing STM32/F9P.
+
+Connect COM7 and wait for the RTCM bridge to become ready. Open the base settings, enter `ntrip.gnsswhu.cn:2101`, mountpoint `WUH200CHN0` and credentials, or import a private BNC file. Connect the base. BNC is not used in this path. Qt bypasses system HTTP proxies using direct TCP sockets; VPN TUN/global routing still requires a direct-routing exception.
+
+Qt de-chunks HTTP, validates RTCM CRC24Q and limits unacknowledged UART bytes to 1024. STM32 forwards PA10 to PA2 using interrupts. Queues are bounded and stale/failed forwarding stops without interrupting acquisition. UBX-RXM-RTCM counters distinguish network delivery from receiver reception/use. The displayed arrival interval is not measurement correction age. Existing v3 records and the three CSV files are unchanged: `carr_soln=1/2` means RTK float/fixed; `fix=3` alone does not identify RTK.
 
 ## Quick start
 
