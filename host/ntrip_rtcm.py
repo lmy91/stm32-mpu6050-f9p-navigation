@@ -24,10 +24,7 @@ NTRIP_DEFAULT_HOST = "ntrip.gnsswhu.cn"
 NTRIP_DEFAULT_PORT = 2101
 NTRIP_DEFAULT_MOUNT = "WUH200CHN0"
 
-MSM_ASSEMBLY_TIMEOUT = 2.0
 RTCM_SEND_TIMEOUT = 2.0
-# Bound total host residence as well as each separate stage.
-RTCM_TOTAL_TIMEOUT = MSM_ASSEMBLY_TIMEOUT + RTCM_SEND_TIMEOUT
 
 
 class RtcmPacket(NamedTuple):
@@ -41,10 +38,14 @@ class RtcmPacket(NamedTuple):
 
     def check_age(self, now):
         assembly, sending, total = self.ages(now)
-        if sending > RTCM_SEND_TIMEOUT or total > RTCM_TOTAL_TIMEOUT:
-            raise OSError(f"RTCM 发送等待/总驻留超限：组包={assembly:.3f}s "
+        # Caster-side MSM delivery can legitimately pause for more than ten
+        # seconds. Only local queue/UART waiting is a host blockage; assembly
+        # age is diagnostic and the receiver decides whether a correction is
+        # still usable from its GNSS epoch.
+        if sending > RTCM_SEND_TIMEOUT:
+            raise OSError(f"RTCM 发送等待超限：组包={assembly:.3f}s "
                           f"发送等待={sending:.3f}s(限{RTCM_SEND_TIMEOUT:g}s) "
-                          f"总驻留={total:.3f}s(限{RTCM_TOTAL_TIMEOUT:g}s)，已停止下发")
+                          f"总驻留={total:.3f}s，已停止下发")
 
 # Observation-arrival interval is NOT the GNSS measurement correction age.
 _OBSERVATION_TYPES = frozenset(
@@ -317,7 +318,13 @@ class F9pMsmAdapter:
 
     Buffer only a bounded, complete MSM group. Preserve all observation bits;
     omit NavIC (1131..1137), clear MMI on the last retained message and renew CRC.
-    A missing terminator is an error, never permission to invent epoch closure.
+    Non-MSM and unknown RTCM messages pass through immediately and never act as
+    group delimiters. A repeated constellation with a new epoch is a reliable
+    implicit boundary: release the preceding supported observations after
+    repairing their final MMI, then start the new epoch. Wall-clock gaps are
+    not protocol boundaries: WUH2 has been observed splitting one valid group
+    across more than thirteen seconds. Capacity, malformed headers and station
+    changes remain bounded failures without tearing down a healthy connection.
     """
 
     def __init__(self):
@@ -326,35 +333,57 @@ class F9pMsmAdapter:
         self.station = None
         self.bytes = 0
         self.filtered = self.rewritten = 0
+        self.dropped_groups = self.dropped_frames = self.dropped_bytes = 0
+        self.expired_groups = self.discontinuous_groups = 0
+        self.oversize_groups = self.malformed_groups = 0
+        self.recovered_groups = 0
+        self.drop_sequence = 0
+        self.notice_sequence = 0
+        self.last_drop_reason = ""
+        self.last_notice_reason = ""
 
     def reset(self):
         self.pending.clear(); self.epochs.clear(); self.station = None; self.bytes = 0
 
-    def feed(self, frame, timestamp):
-        if self.pending and timestamp - self.pending[0][0] > MSM_ASSEMBLY_TIMEOUT:
-            self.reset()
-            raise OSError("MSM 观测组超过 2 秒未结束，拒绝拼接过期历元")
+    @staticmethod
+    def _header(frame):
         message = (frame[3] << 4) | (frame[4] >> 4)
         family = message // 10
-        if not (107 <= family <= 113 and 1 <= message % 10 <= 7):
-            return [(timestamp, frame)]
-        if len(frame) < 28:
-            raise OSError("MSM 头长度不足")
         p = frame[3:-3]
         number = int.from_bytes(p, "big")
         station = (number >> (len(p)*8-24)) & 4095
         epoch = (number >> (len(p)*8-54)) & ((1 << 30)-1)
         multiple = (p[6] >> 1) & 1
-        if self.pending and (station != self.station or
-                             (family in self.epochs and self.epochs[family] != epoch)):
-            self.reset()
-            raise OSError("MSM 组内站号/历元变化，缺少上一组结束标志")
-        self.station = station; self.epochs[family] = epoch
-        self.pending.append((timestamp, frame)); self.bytes += len(frame)
-        if self.bytes > 65536:
-            self.reset()
-            raise OSError("MSM 观测组超过 64 KiB 限制")
-        if multiple: return []
+        return message, family, station, epoch, multiple
+
+    def _summary(self, timestamp=None):
+        entries = []
+        for _, data in self.pending:
+            message, _, station, epoch, multiple = self._header(data)
+            entries.append(f"{message}(站{station},历元{epoch},MMI={multiple})")
+        age = ""
+        if timestamp is not None and self.pending:
+            age = f"，组龄={timestamp-self.pending[0][0]:.3f}s"
+        return ("→".join(entries) if entries else "空") + age
+
+    def _discard(self, reason, category, extra_frames=0, extra_bytes=0, timestamp=None):
+        frames = len(self.pending) + extra_frames
+        byte_count = self.bytes + extra_bytes
+        summary = self._summary(timestamp)
+        self.dropped_groups += 1
+        self.dropped_frames += frames
+        self.dropped_bytes += byte_count
+        if category == "expired": self.expired_groups += 1
+        elif category == "discontinuous": self.discontinuous_groups += 1
+        elif category == "oversize": self.oversize_groups += 1
+        elif category == "malformed": self.malformed_groups += 1
+        self.drop_sequence += 1
+        self.notice_sequence += 1
+        self.last_drop_reason = f"{reason}；缓存={summary}；丢弃 {frames} 帧/{byte_count} B"
+        self.last_notice_reason = self.last_drop_reason
+        self.reset()
+
+    def _release(self):
         output = [(stamp, data) for stamp, data in self.pending
                   if ((data[3] << 4) | (data[4] >> 4)) // 10 != 113]
         self.filtered += len(self.pending) - len(output)
@@ -365,6 +394,38 @@ class F9pMsmAdapter:
             self.rewritten += 1
         self.reset()
         return output
+
+    def feed(self, frame, timestamp):
+        message = (frame[3] << 4) | (frame[4] >> 4)
+        family = message // 10
+        # RTCM framing and CRC validation have already succeeded. Unknown or
+        # non-MSM payloads are independent messages, not MSM group boundaries.
+        if not (107 <= family <= 113 and 1 <= message % 10 <= 7):
+            return [(timestamp, frame)]
+        if len(frame) < 28:
+            self._discard("MSM 头长度不足", "malformed", 1, len(frame), timestamp)
+            return []
+        _, _, station, epoch, multiple = self._header(frame)
+        outgoing = []
+        if self.pending and station != self.station:
+            self._discard(
+                f"MSM 站号由 {self.station} 变为 {station}，上一组不能拼接",
+                "discontinuous", timestamp=timestamp)
+        elif self.pending and family in self.epochs and self.epochs[family] != epoch:
+            summary = self._summary(timestamp)
+            outgoing = self._release()
+            self.recovered_groups += 1
+            self.notice_sequence += 1
+            self.last_notice_reason = (
+                f"同星座 {family}x 新历元 {epoch} 到达，以历元边界结束上一组；"
+                f"缓存={summary}；恢复 {len(outgoing)} 帧")
+        self.station = station; self.epochs[family] = epoch
+        self.pending.append((timestamp, frame)); self.bytes += len(frame)
+        if self.bytes > 65536:
+            self._discard("MSM 观测组超过 64 KiB 限制", "oversize", timestamp=timestamp)
+            return outgoing
+        if multiple: return outgoing
+        return outgoing + self._release()
 
 
 class RtcmQueue:
@@ -474,6 +535,9 @@ class NtripClient(QtCore.QThread):
             f"RTCM缓存={len(self.parser._buffer)}B CRC错={self.parser.crc_errors} "
             f"重同步丢弃={self.parser.resync_bytes}B 最近类型={self.parser.latest_type} | "
             f"MSM待组={len(msm.pending)}帧/{msm.bytes}B/{pending_age} "
+            f"丢组/帧/字节={msm.dropped_groups}/{msm.dropped_frames}/{msm.dropped_bytes} "
+            f"(恢复/过期/断续/超限/畸形={msm.recovered_groups}/{msm.expired_groups}/"
+            f"{msm.discontinuous_groups}/{msm.oversize_groups}/{msm.malformed_groups}) "
             f"队列={queued}B/{queue_age:.2f}s 峰值={peak}B；以上间隔不是差分龄期")
         self._debug_at = now
         self._debug_counts = counts
@@ -568,8 +632,13 @@ class NtripClient(QtCore.QThread):
                     self.frame_count += 1
                     message = (frame[3] << 4) | (frame[4] >> 4) if len(frame) >= 8 else 0
                     self.message_types[message] = self.message_types.get(message, 0) + 1
+                    notice_before = self.msm_adapter.notice_sequence
                     outgoing = (self.msm_adapter.feed(frame, last_frame) if self.f9p_compat
                                 else [(last_frame, frame)])
+                    if self.msm_adapter.notice_sequence != notice_before:
+                        self.diagnostic.emit(
+                            f"MSM兼容：{self.msm_adapter.last_notice_reason}；"
+                            "RTCM流继续，NTRIP连接保持")
                     self._enqueue_ready(outgoing)
                     if self._stop_event.is_set(): return
                     if not announced:

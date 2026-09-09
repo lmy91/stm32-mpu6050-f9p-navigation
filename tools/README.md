@@ -15,7 +15,7 @@
 
 ## 安装
 
-`check_rtcm_bridge.py --stall-gui` 每十秒暂停 GUI 处理半秒，检查独立串口线程是否继续转发。输出重连次数、字节队列峰值、最长发送排队时间及基站 MSM 头信息；可用 `--seconds 180` 做三分钟压力测试。MSM 的 `epoch_raw_ms` 保留原星座时间尺度：北斗转 GPS 需加 14 秒，GLONASS 字段为星期/日内毫秒组合，不能直接与 GPS 周内毫秒相减。测试摘要中的基站 ECEF 坐标是公开基站坐标，不输出流动站坐标。
+`check_rtcm_bridge.py --stall-gui` 每十秒暂停 GUI 处理半秒，检查独立串口线程是否继续转发。输出重连次数、字节队列峰值、最长发送排队时间、MSM 不完整组丢弃计数及基站 MSM 头信息；可用 `--seconds 180` 做三分钟压力测试。MSM 的 `epoch_raw_ms` 保留原星座时间尺度：北斗转 GPS 需加 14 秒，GLONASS 字段为星期/日内毫秒组合，不能直接与 GPS 周内毫秒相减。测试摘要中的基站 ECEF 坐标是公开基站坐标，不输出流动站坐标。
 
 `python tools/inspect_f9p.py COM3` 仅查询接收机原生 USB 的状态/配置，不写 VALSET、不复位、不注入 RTCM。`config_response_received=false` 表示本次没有收到配置查询响应，不能当作配置值为零；COM3 必须由设备枚举确认，不能用 COM7 替代。
 

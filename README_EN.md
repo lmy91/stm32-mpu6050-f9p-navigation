@@ -67,7 +67,7 @@ D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 0
 D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py data\decoded\20260908180500\imu.csv --rate 100 --skip-minutes 30
 ```
 
-See [firmware](firmware/README_EN.md), [desktop application](host/README_EN.md), [tools](tools/README_EN.md), and the [fusion roadmap](fusion/README_EN.md) for details.
+See [firmware](firmware/README_EN.md), [desktop application](host/README_EN.md), [tools](tools/README_EN.md), the [fusion roadmap](fusion/README_EN.md), and [known issues and hardening](docs/KNOWN_ISSUES.md) for details.
 
 ## Protocol v3
 

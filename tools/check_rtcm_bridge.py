@@ -87,6 +87,18 @@ def main():
             "network_crc_errors": client.crc_errors if client else 0,
             "reconnects": client.reconnects if client else 0,
             "msm_rewritten_filtered": [client.msm_adapter.rewritten, client.msm_adapter.filtered] if client else [],
+            "msm_dropped_groups_frames_bytes": [
+                client.msm_adapter.dropped_groups,
+                client.msm_adapter.dropped_frames,
+                client.msm_adapter.dropped_bytes,
+            ] if client else [],
+            "msm_drop_reasons_expired_discontinuous_oversize_malformed": [
+                client.msm_adapter.expired_groups,
+                client.msm_adapter.discontinuous_groups,
+                client.msm_adapter.oversize_groups,
+                client.msm_adapter.malformed_groups,
+            ] if client else [],
+            "msm_recovered_groups": client.msm_adapter.recovered_groups if client else 0,
             "queue": client.frames.snapshot() if client else None,
             "serial_sent_outstanding_max_age": monitor.serial_worker.snapshot,
             "serial_max_assembly_sendwait_host_residence_s": monitor.serial_worker.timing_snapshot,

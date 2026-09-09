@@ -96,7 +96,7 @@ D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 0
 D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py data\decoded\20260908180500\imu.csv --rate 100 --skip-minutes 30
 ```
 
-详细说明见 [固件](firmware/README.md)、[Qt 上位机](host/README.md)、[工具](tools/README.md)、[组合导航算法规划](fusion/README.md) 和 [Allan 方差说明](docs/Allan方差知识总结.md)。
+详细说明见 [固件](firmware/README.md)、[Qt 上位机](host/README.md)、[工具](tools/README.md)、[组合导航算法规划](fusion/README.md)、[已知问题与后续加固](docs/KNOWN_ISSUES.md) 和 [Allan 方差说明](docs/Allan方差知识总结.md)。
 
 ## 串口协议 v3
 

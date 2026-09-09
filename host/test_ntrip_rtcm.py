@@ -10,7 +10,7 @@ import time
 import unittest
 from unittest import mock
 
-from PyQt5 import QtWidgets
+from PyQt5 import QtGui, QtWidgets
 from ntrip_rtcm import (BridgeFlow, NtripClient, NtripResponse, RtcmFrameParser,
                         crc24q, read_bnc_endpoint)
 from imu_serial_qt import NavigationMonitor
@@ -59,12 +59,56 @@ class MsmAdapterTest(unittest.TestCase):
         self.assertEqual(adapter.feed(static, 1), [(1, static)])
         self.assertEqual(adapter.rewritten, 0)
 
-    def test_missing_end_or_station_switch_rejected(self):
-        for second, stamp in ((msm(1077, epoch=2000), 1.1),
-                               (msm(1097, station=622), 1.1), (msm(1137, multiple=0), 4)):
-            adapter = F9pMsmAdapter(); adapter.feed(msm(1077), 1)
-            with self.assertRaises(OSError): adapter.feed(second, stamp)
-            self.assertEqual(adapter.pending, [])
+    def test_long_caster_gap_does_not_expire_group(self):
+        adapter = F9pMsmAdapter(); old = msm(1077)
+        adapter.feed(old, 1)
+        # Independent RTCM and later MSM continuation do not define a boundary.
+        static = frame(19, 1005)
+        self.assertEqual(adapter.feed(static, 20), [(20, static)])
+        self.assertEqual(adapter.pending, [(1, old)])
+        fresh = msm(1097)
+        self.assertEqual(adapter.feed(fresh, 20.1), [])
+        output = adapter.feed(msm(1137, multiple=0), 20.2)
+        self.assertEqual(len(output), 2)
+        self.assertEqual(output[-1][1][9] & 2, 0)
+        self.assertEqual(adapter.pending, [])
+        self.assertEqual(adapter.dropped_groups, 0)
+        self.assertEqual(adapter.expired_groups, 0)
+
+    def test_new_epoch_recovers_previous_group_and_starts_fresh(self):
+        adapter = F9pMsmAdapter(); old = msm(1077)
+        adapter.feed(old, 1)
+        recovered = adapter.feed(msm(1077, epoch=2000), 1.1)
+        self.assertEqual(len(recovered), 1)
+        self.assertEqual(recovered[0][1][9] & 2, 0)
+        self.assertEqual(adapter.recovered_groups, 1)
+        self.assertEqual(adapter.dropped_groups, 0)
+        output = adapter.feed(msm(1137, epoch=2000, multiple=0), 1.2)
+        self.assertEqual(len(output), 1)
+
+    def test_station_switch_drops_previous_group_and_starts_fresh(self):
+        adapter = F9pMsmAdapter(); old = msm(1077)
+        adapter.feed(old, 1)
+        self.assertEqual(adapter.feed(msm(1097, station=622), 1.1), [])
+        output = adapter.feed(msm(1137, multiple=0, station=622), 1.2)
+        self.assertEqual(len(output), 1)
+        self.assertNotEqual(output[0][1], old)
+        self.assertEqual(adapter.discontinuous_groups, 1)
+        self.assertEqual(adapter.dropped_frames, 1)
+
+    def test_group_split_longer_than_thirteen_seconds_is_preserved(self):
+        adapter = F9pMsmAdapter(); gps = msm(1077)
+        adapter.feed(gps, 1)
+        # WUH2 logs on 2026-09-09 observed a 13.594 s split.
+        output = adapter.feed(msm(1137, multiple=0), 14.594)
+        self.assertEqual(len(output), 1)
+        self.assertEqual(output[0][1][9] & 2, 0)
+        self.assertEqual(adapter.dropped_groups, 0)
+
+    def test_short_msm_is_dropped_without_network_error(self):
+        adapter = F9pMsmAdapter(); short = frame(2, 1077)
+        self.assertEqual(adapter.feed(short, 1), [])
+        self.assertEqual((adapter.malformed_groups, adapter.dropped_frames), (1, 1))
 
     def test_split_bds_messages_preserved(self):
         adapter = F9pMsmAdapter(); data = msm(1127)
@@ -260,10 +304,10 @@ class SeparateStageTimingTest(unittest.TestCase):
             self.assertIn("发送等待=2.010s", messages[0])
             self.assertIn("串口待发=406B", messages[0])
 
-    def test_total_residence_guard_and_queue_wait_are_not_reset(self):
-        packet = RtcmPacket(10.0, frame(), 7.5)
-        with self.assertRaisesRegex(OSError, "总驻留=4.100s"):
-            packet.check_age(11.6)
+    def test_caster_assembly_age_is_not_local_send_stall(self):
+        packet = RtcmPacket(20.0, frame(), 1.0)
+        packet.check_age(21.5)
+        self.assertEqual(packet.ages(21.5), (19.0, 1.5, 20.5))
         client = NtripClient("localhost", 2101, "test", "", "")
         client.frames.max_bytes = len(frame())
         client.frames.put_nowait(RtcmPacket(10.0, frame(), 9.0))
@@ -363,13 +407,65 @@ class MonitorBridgeTest(unittest.TestCase):
         worker.report = report(rx=1218, tx=1218)
         worker.report_at = time.monotonic()
         m.serial_worker = worker
-        m._log_link_debug("网络调试测试")
+        m._log_link_debug("预警：网络调试测试 | 省略的周期详情")
         output = m.event_log.toPlainText()
         self.assertIn("已写/未确认=1234/16B", output)
         self.assertIn("收/转发=1218/1218B", output)
         worker.port.read.assert_not_called()
         worker.port.write.assert_not_called()
         m.serial_worker = None
+
+    def test_manual_track_zoom_stays_until_best_window(self):
+        track = self.monitor.map_widget
+        track.set_position(30.0, 114.0)
+        track.set_position(30.00001, 114.00001)
+        track.fit_track()
+        self.assertTrue(track.auto_fit_track)
+
+        track._manual_track_view([True, True])
+        track.local_plot.setRange(xRange=(-0.25, 0.25), yRange=(-0.25, 0.25),
+                                  padding=0.0)
+        before = track.local_plot.viewRange()
+        track.set_position(30.01, 114.01)
+        after = track.local_plot.viewRange()
+        for old_axis, new_axis in zip(before, after):
+            self.assertAlmostEqual(old_axis[0], new_axis[0])
+            self.assertAlmostEqual(old_axis[1], new_axis[1])
+        self.assertFalse(track.auto_fit_track)
+        self.assertIn("局部查看", track.map_status.text())
+
+        track.fit_track()
+        self.assertTrue(track.auto_fit_track)
+        self.assertIn("自动适应", track.map_status.text())
+        self.assertGreater(track.local_plot.viewRange()[0][1], 100.0)
+
+    def test_periodic_debug_is_hidden_and_alert_is_red(self):
+        m = self.monitor
+        m.clear_event_log()
+        m._log_link_debug("周期诊断 | 很长的内部状态")
+        self.assertEqual(m.event_log.toPlainText(), "")
+        m.log_event("基站", "连接失败", "ERROR")
+        fragment = m.event_log.document().lastBlock().begin().fragment()
+        self.assertEqual(fragment.charFormat().foreground().color(), QtGui.QColor("#d32f2f"))
+        self.assertEqual(fragment.charFormat().fontWeight(), QtGui.QFont.Bold)
+        m.clear_event_log()
+        m.log_level_combo.setCurrentIndex(m.log_level_combo.findData("DEBUG"))
+        m._log_link_debug("周期诊断 | 很长的内部状态")
+        self.assertIn("[DEBUG] [链路]", m.event_log.toPlainText())
+        self.assertNotIn("很长的内部状态", m.event_log.toPlainText())
+
+    def test_log_level_threshold_filters_display_and_saved_output(self):
+        m = self.monitor
+        m.clear_event_log()
+        stream = mock.Mock(); m.event_stream = stream
+        m.log_level_combo.setCurrentIndex(m.log_level_combo.findData("WARN"))
+        m.log_event("测试", "普通关键信息", "INFO")
+        m.log_event("测试", "可恢复异常", "WARN")
+        self.assertNotIn("普通关键信息", m.event_log.toPlainText())
+        self.assertIn("[WARN] [测试] 可恢复异常", m.event_log.toPlainText())
+        stream.write.assert_called_once()
+        self.assertIn("[WARN] [测试] 可恢复异常", stream.write.call_args.args[0])
+        m.event_stream = None
 
     def test_event_log_keeps_reconnect_reason_and_recovery(self):
         m = self.monitor

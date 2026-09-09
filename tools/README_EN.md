@@ -15,7 +15,7 @@ These tools match STM32 serial protocol v3 and separately save GPS-timestamped I
 
 ## Install
 
-`check_rtcm_bridge.py --seconds 180 --stall-gui` deliberately pauses GUI handling for half a second every ten seconds while the serial thread keeps running. Statistics include reconnects, byte-queue peak, maximum send-queue age and RTCM MSM headers. MSM epochs retain their constellation time scales: add 14 seconds to BDS for GPST; GLONASS combines day of week and time of day and cannot be directly subtracted from GPS TOW. The printed ECEF position belongs to the reference station, not the rover.
+`check_rtcm_bridge.py --seconds 180 --stall-gui` deliberately pauses GUI handling for half a second every ten seconds while the serial thread keeps running. Statistics include reconnects, byte-queue peak, maximum send-queue age, incomplete-MSM drop counters and RTCM MSM headers. MSM epochs retain their constellation time scales: add 14 seconds to BDS for GPST; GLONASS combines day of week and time of day and cannot be directly subtracted from GPS TOW. The printed ECEF position belongs to the reference station, not the rover.
 
 `python tools/inspect_f9p.py COM3` sends only UBX polls, not VALSET, reset or RTCM. Verify the native USB port first; do not substitute the STM32 COM7. A false `config_response_received` means no configuration response was received, not that the settings equal zero.
 

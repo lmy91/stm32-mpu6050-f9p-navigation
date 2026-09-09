@@ -38,6 +38,7 @@ GYRO_DEG_H_SCALE = 3600.0 / 131.0
 GPS_WEEK_SECONDS = 604800.0
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "decoded"
+LOG_LEVEL_VALUES = {"DEBUG": 10, "INFO": 20, "WARN": 30, "ERROR": 40}
 GNSS_NAMES = {0: "GPS", 1: "SBAS", 2: "GAL", 3: "BDS", 4: "IMES", 5: "QZSS", 6: "GLO"}
 GNSS_COLORS = {
     0: QtGui.QColor("#45a3ff"), 1: QtGui.QColor("#aaaaaa"),
@@ -172,6 +173,7 @@ class NavigationMapWidget(QtWidgets.QWidget):
         self.north_m: deque[float] = deque(maxlen=10000)
         self.amap_loaded = False
         self.amap_loading = False
+        self.auto_fit_track = True
         self.last_wgs_position: tuple[float, float] | None = None
         layout = QtWidgets.QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0)
         bar = QtWidgets.QHBoxLayout()
@@ -182,6 +184,8 @@ class NavigationMapWidget(QtWidgets.QWidget):
         self.load_button = QtWidgets.QPushButton("加载高德地图")
         self.local_button = QtWidgets.QPushButton("本地轨迹")
         self.fit_button = QtWidgets.QPushButton("最佳窗口")
+        self.fit_button.setToolTip(
+            "显示全部轨迹并恢复自动适应；鼠标滚轮缩放或左键拖动后保持人工查看范围")
         self.map_status = QtWidgets.QLabel("当前：本地轨迹")
         self.load_button.clicked.connect(self.load_amap)
         self.local_button.clicked.connect(self.show_local_map)
@@ -193,6 +197,8 @@ class NavigationMapWidget(QtWidgets.QWidget):
         self.local_plot = pg.PlotWidget(); self.local_plot.setBackground("#101418")
         self.local_plot.showGrid(x=True, y=True, alpha=0.3)
         self.local_plot.setAspectLocked(True, ratio=1.0)
+        self.local_plot.getViewBox().sigRangeChangedManually.connect(
+            self._manual_track_view)
         self.local_plot.setLabel("left", "北向", units="m"); self.local_plot.setLabel("bottom", "东向", units="m")
         self.local_plot.setTitle("WGS-84 本地轨迹（高德 Key 未加载时使用）")
         # PlotCurveItem produces long horizontal path artifacts with the
@@ -214,12 +220,24 @@ class NavigationMapWidget(QtWidgets.QWidget):
 
     def show_local_map(self) -> None:
         self.stack.setCurrentWidget(self.local_plot)
-        self.map_status.setText("当前：本地轨迹")
+        self._update_local_status()
+
+    def _update_local_status(self) -> None:
+        suffix = "（自动适应）" if self.auto_fit_track else "（局部查看）"
+        self.map_status.setText("当前：本地轨迹" + suffix)
+
+    def _manual_track_view(self, _axes=None) -> None:
+        """Keep a mouse-selected local range until the user requests a fit."""
+        self.auto_fit_track = False
+        if self.stack.currentWidget() is self.local_plot:
+            self._update_local_status()
 
     def fit_track(self) -> None:
         """Restore an equal-scale view fitted to all collected positions."""
+        self.auto_fit_track = True
         self.show_local_map()
         self._fit_local_track()
+        self._update_local_status()
 
     def _fit_local_track(self) -> None:
         self.local_plot.setAspectLocked(True, ratio=1.0)
@@ -243,6 +261,10 @@ class NavigationMapWidget(QtWidgets.QWidget):
     def clear_track(self) -> None:
         self.origin = None; self.east_m.clear(); self.north_m.clear()
         self.track_curve.clear(); self.position_dot.clear()
+        self.auto_fit_track = True
+        self._fit_local_track()
+        if self.stack.currentWidget() is self.local_plot:
+            self._update_local_status()
         if self.amap_loaded and self.web_view is not None:
             self.web_view.page().runJavaScript("clearTrack();")
 
@@ -255,7 +277,7 @@ class NavigationMapWidget(QtWidgets.QWidget):
         north = (lat - lat0) * 110574.0
         self.east_m.append(east); self.north_m.append(north)
         self.track_curve.setData(list(self.east_m), list(self.north_m)); self.position_dot.setData([east], [north])
-        if self._track_needs_fit():
+        if self.auto_fit_track and self._track_needs_fit():
             self._fit_local_track()
         if self.amap_loaded and self.web_view is not None:
             gcj_lat, gcj_lon = wgs84_to_gcj02(lat, lon)
@@ -389,6 +411,7 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self.bridge_report = None
         self.bridge_report_at = 0.0
         self._ntrip_interrupted_at = None
+        self._pending_ntrip_error_detail = None
         self._logged_fix = None
         self._logged_errors = (0, 0)
         self._build_ui(); self._build_timers(); self.refresh_ports()
@@ -456,6 +479,13 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         controls = QtWidgets.QHBoxLayout()
         self.log_follow = QtWidgets.QCheckBox("自动滚动"); self.log_follow.setChecked(True)
         controls.addWidget(self.log_follow)
+        controls.addWidget(QtWidgets.QLabel("输出等级"))
+        self.log_level_combo = QtWidgets.QComboBox()
+        for title, level in (("INFO 关键及以上", "INFO"), ("WARN 警告及以上", "WARN"),
+                             ("ERROR 仅错误", "ERROR"), ("DEBUG 全部调试", "DEBUG")):
+            self.log_level_combo.addItem(title, level)
+        self.log_level_combo.setToolTip("同时控制日志页和 event.log 后续写入；DEBUG 每 10 秒输出一条精简链路状态")
+        controls.addWidget(self.log_level_combo)
         for title, callback in (("复制日志", self.copy_event_log),
                                 ("导出日志…", self.export_event_log),
                                 ("清空日志", self.clear_event_log)):
@@ -472,13 +502,27 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         layout.addWidget(self.event_log)
         return page
 
-    def log_event(self, category: str, message: str) -> None:
+    def log_event(self, category: str, message: str, level: str = "INFO") -> None:
         # UI-thread events only: never append every IMU/RTCM packet.
+        level = level.upper()
+        if level not in LOG_LEVEL_VALUES: raise ValueError(f"未知日志等级：{level}")
+        selected = self.log_level_combo.currentData() or "INFO"
+        if LOG_LEVEL_VALUES[level] < LOG_LEVEL_VALUES[selected]: return
         message = " ".join(str(message).splitlines())[:2000]
         bar = self.event_log.verticalScrollBar(); previous = bar.value()
         stamp = QtCore.QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz")
-        line = f"{stamp} [{category}] {message}"
-        self.event_log.appendPlainText(line)
+        line = f"{stamp} [{level}] [{category}] {message}"
+        cursor = self.event_log.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.End)
+        if not self.event_log.document().isEmpty(): cursor.insertBlock()
+        text_format = QtGui.QTextCharFormat()
+        if level in ("WARN", "ERROR"):
+            text_format.setForeground(QtGui.QColor("#d32f2f"))
+        elif level == "DEBUG":
+            text_format.setForeground(QtGui.QColor("#777777"))
+        if level == "ERROR":
+            text_format.setFontWeight(QtGui.QFont.Bold)
+        cursor.insertText(line, text_format)
         bar.setValue(bar.maximum() if self.log_follow.isChecked() else previous)
         if self.event_stream is not None:
             try:
@@ -495,7 +539,7 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self.event_save_label.setText("LOG 保存失败，请检查磁盘；采集继续")
         self.statusBar().showMessage(f"LOG 保存失败：{error}；请手动导出界面日志。")
         # The stream is disabled first, so this cannot recurse on a write failure.
-        self.log_event("文件错误", f"LOG 保存失败：{error}；后续仅显示，CSV 采集继续。")
+        self.log_event("文件", f"LOG 保存失败：{error}；后续仅显示，CSV 采集继续。", "ERROR")
 
     def clear_event_log(self) -> None:
         self.event_log.clear()
@@ -515,7 +559,7 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         try:
             pathlib.Path(path).write_text(self.event_log.toPlainText() + "\n", encoding="utf-8")
         except OSError as error:
-            self.log_event("错误", f"日志导出失败：{error}")
+            self.log_event("文件", f"日志导出失败：{error}", "ERROR")
             QtWidgets.QMessageBox.warning(self, "导出失败", str(error))
 
     def _set_ntrip_status(self, message: str) -> None:
@@ -523,7 +567,10 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         now = time.monotonic()
         if "后重连" in message:
             if self._ntrip_interrupted_at is None: self._ntrip_interrupted_at = now
-            self.log_event("基站重连", message)
+            detail = (f"；{self._pending_ntrip_error_detail}"
+                      if self._pending_ntrip_error_detail else "")
+            self._pending_ntrip_error_detail = None
+            self.log_event("基站重连", message + detail, "ERROR")
         elif "收到有效 RTCM" in message:
             extra = ""
             if self._ntrip_interrupted_at is not None:
@@ -533,28 +580,48 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         else:
             self.log_event("基站", message)
 
-    def _log_link_debug(self, message: str) -> None:
-        self.log_event("NTRIP调试", message)
+    def _brief_link_state(self) -> str:
         worker = self.serial_worker
         if worker is None:
-            self.log_event("链路调试", "无串口线程")
-            return
+            return "串口线程不可用"
         sent, pending, max_age = worker.snapshot
-        detail = (f"串口线程运行={int(worker.isRunning())} 已写/未确认={sent}/{pending}B "
-                  f"历史最大发送等待={max_age:.2f}s GUI接收待处理={worker.received.qsize()}块(每块≤4096B) "
-                  f"GUI行缓存={len(self.rx_buffer)}B；IMU/GNSS/RAWX="
-                  f"{self.total_imu}/{self.total_gnss}/{self.total_rawx} "
-                  f"丢帧/无效行={self.lost_imu}/{self.invalid_lines}；{self.fix_label.text()}")
-        assembly, sending, total = worker.timing_snapshot
-        detail += f"；历史最大组包/发送等待/总驻留={assembly:.3f}/{sending:.3f}/{total:.3f}s"
+        detail = (f"串口已写/未确认={sent}/{pending}B，最大发送等待={max_age:.2f}s，"
+                  f"采集丢帧/无效行={self.lost_imu}/{self.invalid_lines}，{self.fix_label.text()}")
         report = worker.report  # Replaced, never mutated by the serial owner.
         if report is not None:
-            detail += (f"；距串口ACK={time.monotonic()-worker.report_at:.2f}s "
-                       f"STM32运行={report[0]}ms 就绪={report[1]} 收/转发={report[2]}/{report[3]}B "
-                       f"丢字节/串口错/GNSS溢出={report[4]}/{report[5]}/{report[6]} "
-                       f"F9P收/使用/CRC错={report[7]}/{report[8]}/{report[9]} "
-                       f"站号/类型={report[10]}/{report[11]}（设备计数自启动累计）")
-        self.log_event("链路调试", detail + "；异步近似快照，非同一时刻原子采样")
+            detail += (f"，STM32收/转发={report[2]}/{report[3]}B，"
+                       f"丢字节/串口错={report[4]}/{report[5]}，"
+                       f"F9P收/使用/CRC错={report[7]}/{report[8]}/{report[9]}")
+        return detail
+
+    def _brief_network_state(self) -> str:
+        client = self.ntrip_client
+        if client is None: return "NTRIP线程不可用"
+        queued, _peak, age = client.frames.snapshot()
+        return (f"网络={client.network_bytes}B/{client.frame_count}帧，CRC错={client.crc_errors}，"
+                f"重连={client.reconnects}，待发={queued}B/{age:.2f}s")
+
+    def _log_link_debug(self, message: str) -> None:
+        reason = message.split(" | ", 1)[0]
+        if reason.startswith("异常现场"):
+            self._pending_ntrip_error_detail = (f"{self._brief_network_state()}；"
+                                                f"{self._brief_link_state()}")
+            return
+        if reason.startswith("有效 RTCM 恢复"):
+            self.log_event("基站", "RTCM 数据恢复，当前 NTRIP 连接未重建。")
+            return
+        if reason == "周期诊断":
+            self.log_event("链路", f"{self._brief_network_state()}；{self._brief_link_state()}",
+                           "DEBUG")
+            return
+        if reason.startswith("停止前即时现场："):
+            reason = reason.split("；", 1)[0]
+        if reason.startswith(("预警：", "MSM兼容：")):
+            self.log_event("链路", f"{reason}；{self._brief_link_state()}", "WARN")
+            return
+        if reason.startswith("停止前即时现场：") or "异常" in reason:
+            self.log_event("链路", f"{reason}；{self._brief_link_state()}", "ERROR")
+        # 开始连接和首次有效 RTCM 已由 INFO 状态事件覆盖，不重复输出。
 
     @staticmethod
     def _configure_plot(plot: pg.PlotItem, title: str, y_name: str, units: str) -> None:
@@ -703,7 +770,7 @@ class NavigationMonitor(QtWidgets.QMainWindow):
             self.statusBar().showMessage(
                 f"保存到 {directory.name}\\" + "、".join(created)); return True
         except OSError as error:
-            self.log_event("错误", f"创建数据文件失败：{error}")
+            self.log_event("文件", f"创建数据文件失败：{error}", "ERROR")
             self._close_logs(); QtWidgets.QMessageBox.critical(self, "文件错误", f"无法创建数据文件：\n{error}"); return False
 
     def _close_logs(self) -> None:
@@ -731,7 +798,7 @@ class NavigationMonitor(QtWidgets.QMainWindow):
             port = serial.Serial(device, int(self.baud_combo.currentText()), timeout=0, write_timeout=0)
             port.dtr = False; port.rts = False; port.reset_input_buffer()
         except (serial.SerialException, OSError) as error:
-            self.log_event("串口错误", f"无法打开 {device}：{error}")
+            self.log_event("串口", f"无法打开 {device}：{error}", "ERROR")
             self._close_logs(); QtWidgets.QMessageBox.critical(self, "串口连接失败", f"无法打开 {device}：\n{error}"); return
         self.serial_port = port; self.rx_buffer.clear(); self.discard_until_newline = True
         self.bridge_report = None; self.bridge_report_at = 0.0
@@ -763,7 +830,9 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         elif self.serial_port is not None:
             try: self.serial_port.close()
             except serial.SerialException: pass
-        if was_connected: self.log_event("串口", reason + "；正在关闭数据文件。")
+        if was_connected:
+            self.log_event("串口", reason + "；正在关闭数据文件。",
+                           "ERROR" if "异常" in reason else "INFO")
         self.serial_port = None; self._close_logs(); self.port_combo.setEnabled(True); self.baud_combo.setEnabled(True)
         self._set_log_controls_enabled(True); self.pause_button.setEnabled(False); self.connect_button.setText("连接")
         self.connection_label.setText("● 未连接"); self.connection_label.setStyleSheet("color:#ff6174;font-weight:bold")
@@ -773,7 +842,7 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self.serial_worker = SerialWorker(port, self)
         worker = self.serial_worker
         worker.diagnostic.connect(lambda message, source=worker:
-                                  self.log_event("串口即时调试", message)
+                                  self._log_link_debug(message)
                                   if source is self.serial_worker else None)
         worker.failed.connect(lambda message, source=worker:
                               self.disconnect_serial(f"串口异常：{message}")
@@ -813,7 +882,7 @@ class NavigationMonitor(QtWidgets.QMainWindow):
                                  str(self.settings.value("ntrip_mount", NTRIP_DEFAULT_MOUNT)),
                                  str(self.settings.value("ntrip_user", "")), self.ntrip_password, self)
         except (ValueError, OSError) as error:
-            self.log_event("基站错误", f"无法启动基站：{error}")
+            self.log_event("基站", f"无法启动基站：{error}", "ERROR")
             QtWidgets.QMessageBox.warning(self, "无法启动基站", str(error)); return
         self.ntrip_client = client; self.ntrip_workers.append(client)
         self.serial_worker.set_source(client)
@@ -824,6 +893,7 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         client.finished.connect(lambda source=client: self._ntrip_finished(source))
         self.ntrip_button.setText("停止基站"); self.ntrip_settings_button.setEnabled(False)
         self._ntrip_interrupted_at = None
+        self._pending_ntrip_error_detail = None
         self._set_ntrip_status("基站: 正在直连 NTRIP…")
         client.start()
 
@@ -840,8 +910,12 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self.ntrip_client = None
         self.ntrip_button.setText("连接基站"); self.ntrip_settings_button.setEnabled(True)
         self.ntrip_label.setText(reason)
-        if was_active: self.log_event("基站", reason)
+        if was_active:
+            normal_stop = reason in ("基站: 已停止", "基站: 已停止，IMU/GNSS 采集继续",
+                                     "基站: 网络线程已退出")
+            self.log_event("基站", reason, "INFO" if normal_stop else "ERROR")
         self._ntrip_interrupted_at = None
+        self._pending_ntrip_error_detail = None
 
     def _process_rtcm_status(self, line: str) -> None:
         try:
@@ -959,8 +1033,13 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self.fix_label.setText(f"定位: {fix_names.get(fix, str(fix))}{quality}")
         state = (fix, carr_soln, gnss_fix_ok, diff_soln)
         if state != self._logged_fix:
+            previous = self._logged_fix
+            degraded = bool(previous and (
+                carr_soln < previous[1] or gnss_fix_ok < previous[2]
+                or diff_soln < previous[3]))
             self.log_event("定位", f"W{week} {tow_ms / 1000:.3f}s · "
-                           f"{self.fix_label.text()} · 差分 {diff_soln} · hAcc {h_acc_m:.3f} m")
+                           f"{self.fix_label.text()} · 差分 {diff_soln} · hAcc {h_acc_m:.3f} m",
+                           "WARN" if degraded else "INFO")
             self._logged_fix = state
         self.sv_label.setText(f"卫星数: {num_sv}"); self.pdop_label.setText(f"PDOP: {pdop / 100.0:.2f}")
         self.lat_value.setText(f"{lat:.9f}°"); self.lon_value.setText(f"{lon:.9f}°")
@@ -1063,7 +1142,8 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         errors = (self.lost_imu, self.invalid_lines)
         if errors != self._logged_errors:
             if any(a > b for a, b in zip(errors, self._logged_errors)):
-                self.log_event("采集警告", f"累计 IMU 丢帧 {errors[0]}；无效行 {errors[1]}（本次统计窗口合并报告）")
+                self.log_event("采集", f"累计 IMU 丢帧 {errors[0]}；无效行 {errors[1]}（本次统计窗口合并报告）",
+                               "WARN")
             self._logged_errors = errors
         rate = 0.0
         if len(self.arrivals) >= 2:
@@ -1085,7 +1165,10 @@ class NavigationMonitor(QtWidgets.QMainWindow):
                 self.rtcm_label.setToolTip(
                     f"STM32/F9P 计数自启动累计；关注本次增量。队列峰值 {peak} B。\n"
                     f"F9P MSM兼容：移除 NavIC {c.msm_adapter.filtered} 帧，"
-                    f"修正历元结束标志 {c.msm_adapter.rewritten} 次；观测数值不改。\n"
+                    f"修正历元结束标志 {c.msm_adapter.rewritten} 次，"
+                    f"历元边界恢复 {c.msm_adapter.recovered_groups} 组，"
+                    f"丢弃不完整组 {c.msm_adapter.dropped_groups} 组/"
+                    f"{c.msm_adapter.dropped_frames} 帧；观测数值不改。\n"
                     "距接收是状态消息到达间隔，不是观测历元差分龄期。")
             age = "--" if r[12] == 0xFFFFFFFF else f"{r[12] / 1000:.1f}s"
             self.rtcm_label.setText(
