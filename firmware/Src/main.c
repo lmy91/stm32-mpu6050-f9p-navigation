@@ -772,15 +772,15 @@ static void gnss_process(void)
     static uint8_t payload[UBX_MAX_PAYLOAD];
     uint8_t byte;
     uint32_t rx_time_low;
-    uint64_t now = timer_now_us();
-    uint64_t rx_time_base = now & ~0xFFFFFFFFull;
 
     while (gnss_rx_pop(&byte, &rx_time_low)) {
-        uint64_t byte_rx_us = rx_time_base | rx_time_low;
-        /* The receive ring can hold far less than one 32-bit timer period
-         * (about 71 minutes), so a future-looking low word is from the
-         * immediately preceding period. */
-        if (byte_rx_us > now) byte_rx_us -= 0x100000000ull;
+        /* Read the reference after popping the byte, so it cannot predate the
+         * byte timestamp even when USART2 appends data while this loop runs.
+         * Unsigned 32-bit subtraction gives the byte age across a low-word
+         * wrap; the receive ring cannot retain data for its 71-minute period. */
+        uint64_t reference_us = timer_now_us();
+        uint32_t age_us = (uint32_t)reference_us - rx_time_low;
+        uint64_t byte_rx_us = reference_us - (uint64_t)age_us;
         switch (state) {
         case 0u:
             if (byte == 0xB5u) state = 1u;
