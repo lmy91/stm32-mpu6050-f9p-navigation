@@ -621,6 +621,16 @@ static void gnss_send_rawx_config(void)
     gnss_valset(config, sizeof config / sizeof config[0]);
 }
 
+static void gnss_send_sfrbx_config(void)
+{
+    /* Broadcast navigation words are required in the original UBX recording
+     * to create RINEX navigation files in addition to observation files. */
+    static const gnss_cfg_item_t config[] = {
+        {0x20910232u, 1u, 1u},       /* UBX-RXM-SFRBX UART1: every message */
+    };
+    gnss_valset(config, sizeof config / sizeof config[0]);
+}
+
 static void gnss_configure(void)
 {
     /* C099 normally ships at 460800 baud; bare/default F9P UART1 is 38400.
@@ -642,6 +652,8 @@ static void gnss_configure(void)
     gnss_send_navigation_config();
     delay_ms(20u);
     gnss_send_rawx_config();
+    delay_ms(20u);
+    gnss_send_sfrbx_config();
     /* Separate transaction: diagnostic keys must not cause a RAWX config NAK. */
     static const gnss_cfg_item_t rtcm_status[] = {
         {0x20910269u, 1u, 1u}, /* UBX-RXM-RTCM UART1: every input message */
@@ -1028,7 +1040,7 @@ static void print_header(void)
     uart_puts("# trigger=mpu6050_data_ready_pa1_tim2_ch2_rising\r\n");
     uart_puts("# logger_uart=usart1_pa9_460800\r\n");
     uart_puts("# f9p_uart=usart2_pa2_pa3_115200_ubx_rtcm3in\r\n");
-    uart_puts("# f9p_output=nav_pvt_1hz_nav_sat_1hz_rxm_rawx_1hz_tim_tp_1hz_gps_grid\r\n");
+    uart_puts("# f9p_output=nav_pvt_1hz_nav_sat_1hz_rxm_rawx_1hz_rxm_sfrbx_all_tim_tp_1hz_gps_grid\r\n");
     uart_puts("# sample_rate_hz=100\r\n");
     uart_puts("# accel_range_g=2\r\n");
     uart_puts("# accel_scale_lsb_per_g=16384\r\n");
