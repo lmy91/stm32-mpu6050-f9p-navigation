@@ -64,6 +64,10 @@
 #define TIM_UIF   (1u << 0)
 #define TIM_CC1IF (1u << 1)
 #define TIM_CC2IF (1u << 2)
+/* Overcapture flags: set when a new input capture occurs while the previous
+ * CCxIF is still pending (CCRx already held an unserviced capture). */
+#define TIM_CC1OF (1u << 9)
+#define TIM_CC2OF (1u << 10)
 #define I2C_PE    (1u << 0)
 #define I2C_START (1u << 8)
 #define I2C_STOP  (1u << 9)
@@ -171,6 +175,14 @@ volatile uint32_t g_debug_probe_mask;
 volatile uint32_t g_debug_who_am_i;
 volatile uint32_t g_debug_interrupt_count;
 volatile uint32_t g_debug_interrupt_overruns;
+/* Number of ISR entries where TIM2 CC2OF was set: CCR2 was overwritten by a
+ * new DATA_RDY edge before the previous capture was serviced. This is a
+ * one-bit event flag, not an exact count of lost epochs. */
+volatile uint32_t g_debug_cc2_overcapture;
+/* Number of times the inter-capture interval between two consecutively
+ * consumed IMU epochs exceeded 15000 us (i.e. a visible epoch gap in the
+ * final retained capture timeline). */
+volatile uint32_t g_debug_dt_gap_count;
 volatile uint32_t g_debug_pps_count;
 volatile uint32_t g_debug_gnss_rx_overruns;
 volatile uint32_t g_debug_gnss_messages;
@@ -246,8 +258,29 @@ void TIM2_IRQHandler(void)
     uint32_t status = TIM2_SR;
     uint32_t high = g_timer_overflows;
 
+    /* Acknowledge only the software-cleared flags that belonged to this
+     * snapshot. Any UIF/CCxOF event occurring after this write remains set
+     * and is handled by a subsequent IRQ.
+     *
+     * CC1IF/CC2IF are intentionally NOT cleared here: reading CCR1/CCR2 below
+     * clears them in input-capture mode. Clearing them from a stale snapshot
+     * here could drop a CCxIF that a new edge set after the CCR read. */
+    TIM2_SR = ~(status & (TIM_UIF | TIM_CC1OF | TIM_CC2OF));
+
+    if (status & TIM_CC2OF) {
+        /* Observed overcapture incident: CCR2 was overwritten by a new edge
+         * while the previous capture was still unserviced. This is a one-bit
+         * sticky event flag, not an exact count of lost epochs. */
+        ++g_debug_cc2_overcapture;
+    }
+
     if (status & TIM_CC1IF) {
-        g_pps_capture_us = timer_capture_time((uint16_t)TIM2_CCR1, status, high);
+        uint16_t capture = (uint16_t)TIM2_CCR1;  /* clears CC1IF */
+        /* Re-read UIF after the CCR read: TIM2 may have wrapped between the
+         * snapshot above and now. OR it in so timer_capture_time() can decide
+         * the correct 48-bit epoch from the capture's half-period position. */
+        uint32_t capture_status = status | (TIM2_SR & TIM_UIF);
+        g_pps_capture_us = timer_capture_time(capture, capture_status, high);
         ++g_pps_count;
         ++g_debug_pps_count;
         g_pps_gps_week = g_next_gps_week;
@@ -256,13 +289,14 @@ void TIM2_IRQHandler(void)
         g_next_gps_time_valid = 0u;
     }
     if (status & TIM_CC2IF) {
-        g_data_ready_us = timer_capture_time((uint16_t)TIM2_CCR2, status, high);
+        uint16_t capture = (uint16_t)TIM2_CCR2;  /* clears CC2IF */
+        uint32_t capture_status = status | (TIM2_SR & TIM_UIF);
+        g_data_ready_us = timer_capture_time(capture, capture_status, high);
         if (g_data_ready) ++g_debug_interrupt_overruns;
         g_data_ready = 1u;
         ++g_debug_interrupt_count;
     }
     if (status & TIM_UIF) g_timer_overflows = high + 1u;
-    TIM2_SR = ~(status & (TIM_UIF | TIM_CC1IF | TIM_CC2IF));
 }
 
 void USART1_IRQHandler(void)
@@ -623,12 +657,18 @@ static void gnss_send_rawx_config(void)
 
 static void gnss_send_sfrbx_config(void)
 {
-    /* Broadcast navigation words are required in the original UBX recording
-     * to create RINEX navigation files in addition to observation files. */
-    static const gnss_cfg_item_t config[] = {
-        {0x20910232u, 1u, 1u},       /* UBX-RXM-SFRBX UART1: every message */
+    /* HPG 1.13 can report SFRBX/UART1=1 while its message scheduler remains
+     * inactive.  A proven disable-then-enable CFG-MSG sequence rearms it.
+     * Rates are I2C, UART1, UART2, USB, SPI and reserved, respectively. */
+    static const uint8_t disable[] = {
+        0x02u, 0x13u, 0u, 0u, 0u, 0u, 0u, 0u,
     };
-    gnss_valset(config, sizeof config / sizeof config[0]);
+    static const uint8_t enable_uart1[] = {
+        0x02u, 0x13u, 0u, 1u, 0u, 0u, 0u, 0u,
+    };
+    gnss_ubx_send(0x06u, 0x01u, disable, sizeof disable);
+    delay_ms(20u);
+    gnss_ubx_send(0x06u, 0x01u, enable_uart1, sizeof enable_uart1);
 }
 
 static void gnss_configure(void)
@@ -1229,6 +1269,14 @@ static void print_sync(uint32_t pps_count, uint64_t capture_us,
     uart_puts(",vel_n_mms="); uart_i32(g_debug_nav_vel_n_mms);
     uart_puts(",vel_e_mms="); uart_i32(g_debug_nav_vel_e_mms);
     uart_puts(",vel_d_mms="); uart_i32(g_debug_nav_vel_d_mms);
+    /* Observability counters (cumulative since boot). Host diffs adjacent
+     * # sync lines to get per-second increments. */
+    uart_puts(",sample_count="); uart_u32(g_debug_sample_count);
+    uart_puts(",interrupt_count="); uart_u32(g_debug_interrupt_count);
+    uart_puts(",interrupt_overruns="); uart_u32(g_debug_interrupt_overruns);
+    uart_puts(",cc2_overcapture="); uart_u32(g_debug_cc2_overcapture);
+    uart_puts(",dt_gap_count="); uart_u32(g_debug_dt_gap_count);
+    uart_puts(",i2c_errors="); uart_u32(g_debug_i2c_errors);
     uart_puts("\r\n");
 }
 
@@ -1384,6 +1432,7 @@ int main(void)
 
         errors = 0u;
         uint64_t dt = previous_us ? now - previous_us : 0u;
+        if (previous_us && dt > 15000u) ++g_debug_dt_gap_count;
         print_sample(sample++, now, frame);
 
         /* Spread the once-per-second sky-view burst over IMU epochs so serial

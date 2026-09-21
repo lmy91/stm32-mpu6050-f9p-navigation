@@ -1,0 +1,28 @@
+[Unit]
+Description=MPU6050/F9P live LAN dashboard
+Documentation=https://github.com/lmy91/stm32-mpu6050-f9p-navigation
+After=network-online.target gnss-imu-logger.service
+Wants=network-online.target gnss-imu-logger.service
+
+[Service]
+Type=simple
+User=lmy
+WorkingDirectory=/home/lmy/stm32-mpu6050-f9p-navigation
+ExecStart=/usr/bin/python3 -u raspberry_pi5/live_dashboard.py --host 0.0.0.0 --port 8080 --data-dir /home/lmy/stm32-mpu6050-f9p-navigation/data/decoded --state-file /run/gnss-imu/live.json --record-control /run/gnss-imu/recording.enabled --ntrip-control /run/gnss-imu/ntrip.json --map-config /home/lmy/.config/gnss-imu/amap.json
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# Dashboard and logger both own the volatile directory.  This keeps its
+# writable bind mount valid even when either service is restarted alone.
+RuntimeDirectory=gnss-imu
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=restart
+ReadWritePaths=/run/gnss-imu
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

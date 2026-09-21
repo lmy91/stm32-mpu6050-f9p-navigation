@@ -33,16 +33,20 @@
 | USB-TTL RX | PA9 |
 | USB-TTL TX（3.3V TTL） | PA10 |
 | USB-TTL GND | GND |
-| ST-LINK SWDIO | PA13/SWDIO |
+| ST-LINK SWDIO | 板载SWIO / PA13/SWDIO |
 | ST-LINK SWCLK | PA14/SWCLK |
 | ST-LINK GND | GND |
-| ST-LINK 3.3V | 3.3V |
+| ST-LINK 3.3V | 仅由ST-Link单独供电时使用；树莓派供电时不接 |
 
 保持 BOOT0=0。所有设备必须共地。RTCM 下发需要 USB-TTL TX 接 PA10；不要让多个电源同时向开发板 VCC 反向供电。
 
+开发板丝印`SWIO`与`SWDIO`是同一个信号。当前使用树莓派5V供电时，ST-Link只接
+`SWDIO→SWIO`、`SWCLK→SWCLK`、`GND→GND`，若调试器提供复位线则再接
+`RST→NRST`；ST-Link的3.3V和5V均不连接。
+
 C099 的 J4 必须只在 `ARDUINO MODE`（7-8，板上丝印 `ARD`）放置跳帽，才能让 STM32 的 PA2 驱动 ZED-F9P RXD。`ARD`、`UART1`、`UART3` 三个位置只能选择一个。
 
-STM32 每次启动会把 F9P UART1 配置到 115200 bit/s，允许 UBX/RTCM3 输入，只输出 UBX；内部测量与导航保持 10 Hz，`UBX-NAV-PVT`、`UBX-NAV-SAT`、`UBX-RXM-RAWX` 和 `UBX-TIM-TP` 均输出 1 Hz。TIMEPULSE 为 GPS 时间网格、1 Hz、100 ms 高电平、上升沿对齐周内整秒。启动配置仅写 RAM，不要求修改 F9P USB 或 BBR/Flash。
+STM32 每次启动会把 F9P UART1 配置到 115200 bit/s，允许 UBX/RTCM3 输入，只输出 UBX；内部测量与导航保持10 Hz，`UBX-NAV-PVT`、`UBX-NAV-SAT`、`UBX-RXM-RAWX`和`UBX-TIM-TP`均输出1 Hz，`UBX-RXM-SFRBX`逐条输出广播导航字，供树莓派原始UBX录制后生成RINEX导航文件。TIMEPULSE为GPS时间网格、1 Hz、100 ms高电平、上升沿对齐周内整秒。启动配置仅写RAM，不要求修改F9P USB或BBR/Flash。
 
 ## RTCM 转发与反馈
 
@@ -99,7 +103,28 @@ build/ 是可重建目录，不提交到 Git。
 
 `GNSS` 以 1 Hz 输出。`rx_timer_us` 是完整NAV-PVT帧通过校验时的STM32本地微秒时刻。经纬度单位为 `1e-7 deg`，高程与位置精度为mm，NED/地面速度与速度精度为mm/s，PDOP比例为0.01。`flags`、`flags2`保留NAV-PVT原始质量位，`carr_soln` 从 `flags[7:6]` 提取（0=无载波解，1=RTK浮点，2=RTK固定）。`SAT`/`SAT_END` 提供1 Hz天空图快照。每个PPS还会输出一行以 `# sync` 开头的诊断状态。
 
+`# sync` 行（每个 PPS 一行）末尾携带六个 32 位累计计数器（自启动累计、可回绕），供上位机做无符号差分得到每秒增量：
+
+```text
+# sync,pps=...,timer_us=...,gps_week=...,gps_tow_ms=...,time_valid=...,
+  pvt_itow_ms=...,fix=...,num_sv=...,lat_e7=...,lon_e7=...,hmsl_mm=...,
+  vel_n_mms=...,vel_e_mms=...,vel_d_mms=...,
+  sample_count=...,interrupt_count=...,interrupt_overruns=...,
+  cc2_overcapture=...,dt_gap_count=...,i2c_errors=...
+```
+
+| 字段 | 含义 |
+| --- | --- |
+| `sample_count` | 成功输出的 IMU 样本累计数 |
+| `interrupt_count` | ISR 观察并处理的 DATA_RDY capture 累计数（非物理边沿总数） |
+| `interrupt_overruns` | 软件单槽 mailbox 尚未消费时又来新 capture 的累计数（软件级覆盖） |
+| `cc2_overcapture` | TIM2 CCR2 发生硬件 overcapture 的累计数（硬件级覆盖，一位事件标志，不等于丢失 epoch 数） |
+| `dt_gap_count` | 相邻成功样本间隔 `dt > 15000 µs` 的累计数 |
+| `i2c_errors` | capture 后读取 MPU 数据失败的累计数 |
+
 `RAWX` 同样为1 Hz。伪距、载波相位和多普勒以IEEE-754位模式十六进制输出，避免单片机浮点格式化并保持接收机原值；`gnss_id/sig_id/freq_id` 标明实际观测信号。最多保存96条观测，`num_meas` 是已输出数，`total_meas` 是接收历元数。固件每个IMU周期最多发送一条RAWX记录，使460800日志串口持续畅通。
+
+`RXM-SFRBX`仅存在于F9P UART1原始UBX字节流中，STM32会完成校验但不转换成协议v3文本。树莓派通过GPIO5/RXD2旁路保存这些字节；`RAWX + SFRBX`分别为后续生成RINEX观测文件和导航文件提供输入。
 
 ## 工作原理
 

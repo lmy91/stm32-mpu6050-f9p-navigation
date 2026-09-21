@@ -1,0 +1,12 @@
+[Unit]
+Description=Set Raspberry Pi wall clock once from valid F9P GNSS time
+Wants=gnss-imu-logger.service
+After=gnss-imu-logger.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/lmy/stm32-mpu6050-f9p-navigation/raspberry_pi5/gnss_time_sync.py --state-file /run/gnss-imu/live.json --timeout 0
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

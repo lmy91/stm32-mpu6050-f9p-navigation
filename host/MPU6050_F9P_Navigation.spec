@@ -21,9 +21,9 @@ EXTRA_BINARIES = [
 
 a = Analysis(
     [str(HOST_DIR / 'imu_serial_qt.py')],
-    pathex=[],
+    pathex=[str(HOST_DIR.parent)],
     binaries=EXTRA_BINARIES,
-    datas=[],
+    datas=[(str(HOST_DIR.parent / 'fusion' / 'self_aim_config.json'), 'fusion')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

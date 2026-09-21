@@ -42,7 +42,7 @@ Keep BOOT0 low and use a common ground. USB-TTL TX must connect to PA10 for RTCM
 
 Place exactly one C099 J4 jumper in `ARDUINO MODE` (pins 7-8, silkscreen `ARD`) so PA2 can drive ZED-F9P RXD. Do not populate the `UART1` or `UART3` routing jumpers at the same time.
 
-At every boot the MCU configures F9P UART1 for 115200 bit/s, UBX/RTCM3 input and UBX-only output. Internal measurements/navigation remain at 10 Hz; UBX-NAV-PVT, UBX-NAV-SAT, and UBX-TIM-TP are each output at 1 Hz. TIMEPULSE uses the GPS grid at 1 Hz with a 100 ms active-high pulse aligned to integer TOW.
+At every boot the MCU configures F9P UART1 for 115200 bit/s, UBX/RTCM3 input and UBX-only output. Internal measurements/navigation remain at 10 Hz; UBX-NAV-PVT, UBX-NAV-SAT, UBX-RXM-RAWX, and UBX-TIM-TP are output at 1 Hz, while UBX-RXM-SFRBX broadcasts every received navigation word for RINEX navigation-file generation. TIMEPULSE uses the GPS grid at 1 Hz with a 100 ms active-high pulse aligned to integer TOW.
 
 ## Build
 
@@ -96,6 +96,8 @@ After reset, PA9 emits protocol-v3 synchronization, navigation, sky-view, and RA
 `GNSS` records are produced at 1 Hz. `rx_timer_us` is the STM32 local microsecond time when a complete NAV-PVT frame passes checksum validation. Latitude/longitude use `1e-7 deg`; height and position accuracy use mm; NED/ground velocity and speed accuracy use mm/s; PDOP uses a 0.01 scale. `flags` and `flags2` preserve the NAV-PVT quality bits, while `carr_soln` extracts `flags[7:6]` (0=no carrier solution, 1=RTK float, 2=RTK fixed). `SAT`/`SAT_END` provide a 1 Hz sky-view snapshot. A `# sync` diagnostic line is also emitted for every PPS.
 
 `RAWX` is also 1 Hz. Pseudorange, carrier phase, and Doppler are transported as exact IEEE-754 bit-pattern hex together with signal IDs and quality flags. Up to 96 observations are stored, and one RAWX record is emitted per IMU epoch to keep the 460800-bit/s logger responsive.
+
+`RXM-SFRBX` remains only in the original F9P UART1 UBX stream; the STM32 validates but does not expand it into protocol-v3 text. The Raspberry Pi GPIO5/RXD2 tap stores that stream so RAWX and SFRBX can later produce RINEX observation and navigation files.
 
 ## How it works
 

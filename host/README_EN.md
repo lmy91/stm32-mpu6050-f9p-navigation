@@ -27,8 +27,10 @@ Alternatively, double-click host/run_imu_serial_qt.bat.
 3. Click Refresh and select the corresponding COM port.
 4. Select 460800 baud and click Connect.
 5. Use the Navigation tab for position, speed, DOP, satellites and sky view; use the IMU tab for sensor curves.
-6. Select any combination of IMU, GNSS, and RAWX logging, or click Select All. After choosing a parent directory, the monitor creates a session folder such as `20260908180500`; only selected files are created. Selecting none keeps live display without logging.
-7. Click Disconnect before unplugging USB-TTL.
+6. Complete coarse and fine alignment on Self-Aim. Once fine alignment is stable, use Integrated Navigation to finish alignment and start the realtime filter. This page shows the fused map track, NED velocity and FRD attitude time series, plus GNSS delay and IMU replay timing.
+7. Select any combination of IMU, GNSS, RAWX, AIM, NAV, and LOG, or click One-click Record. Once all are selected the button changes to One-click Cancel and clears every selection when clicked again.
+8. The Self-Aim tab shows all 15 current physical-state values and their 15 KF standard deviations throughout coarse and fine alignment.
+9. Click Disconnect before unplugging USB-TTL.
 
 Pause plots stops UI refresh only; reception and enabled recording continue. Clear plots clears the display buffer without deleting saved CSV files.
 
@@ -46,7 +48,7 @@ The top status row continues to expose cumulative network frames, CRC errors, re
 
 The Log (日志) tab keeps local millisecond timestamps for connection/retry reasons, RTCM recovery, serial errors, recording paths, GNSS fix transitions and aggregated acquisition warnings. RTK fixed-to-float/3D transitions, loss of differential use and invalid fixes are red alerts; initial acquisition and quality upgrades are ordinary key events. Recovery duration starts at the first reported error, not the beginning of the outage; it is not correction age. Credentials and individual observation packets are not logged.
 
-Auto-scroll, copy, manual UTF-8 `.log` export and clear are available. The display retains only the latest 5000 entries. Select `LOG` before connecting to write new session events to `event.log` beside the selected CSV files in the timestamped directory. The file has no 5000-entry cap and excludes earlier display history. `LOG` is unchecked by default; Select All includes it, and recording selections are locked while connected. LOG alone can be selected without CSV files.
+Auto-scroll, copy, manual UTF-8 `.log` export and clear are available. The display retains only the latest 5000 entries. Select `LOG` before connecting to write new session events to `event.log` beside the selected CSV files in the timestamped directory. The file has no 5000-entry cap and excludes earlier display history. `LOG` is unchecked by default; One-click Record includes it, and recording selections are locked while connected. LOG alone can be selected without CSV files.
 
 The Log tab selects a minimum output level: `INFO` (default, key events and above), `WARN` (warnings and errors), `ERROR` only, or `DEBUG` (all events plus one concise link-status line every ten seconds). Every line carries an explicit level and category such as `[WARN] [链路]`; WARN/ERROR are red, ERROR is bold, and DEBUG is gray. A selection immediately controls subsequent display and `event.log` writes; events filtered before the change are not replayed.
 
@@ -83,11 +85,18 @@ The input consists of typed records:
     RAWX_MEAS,gnss_id,sv_id,sig_id,freq_id,pr_f64hex,cp_f64hex,do_f32hex,lock_ms,cno,pr_std,cp_std,do_std,trk_stat
     RAWX_END,num_meas
 
-Three short-name files are available inside each session folder; only those selected before connecting are created:
+Short-name files are available inside each session folder; only those selected before connecting are created:
 
 - `imu.csv`: GPS time, local capture time, raw IMU and physical units.
 - `gnss.csv`: GPS time and receive time, WGS-84 position/velocity and accuracy, PDOP, fix/RTK quality, and satellite count.
 - `rawx.csv`: per-signal pseudorange, carrier phase, Doppler, frequency, C/N0, lock time, and quality flags.
+- `aim.csv`: coarse/fine alignment physical states, 15-state standard deviations, update statistics, and the fine-alignment initial AVP.
+- `nav.csv`: fused position, NED velocity, FRD attitude, biases, 15-state standard deviations, and GNSS delay/replay diagnostics at a default 100 Hz. If inertial propagation and a subsequent GNSS correction produce the same GPS epoch, only the final corrected row is retained, so timestamps are unique. `output_source` identifies propagation, replay correction, rejected GNSS, or initialization.
+- `session.json`: created whenever AIM or NAV logging is selected. It captures the exact effective Qt algorithm configuration, source path, frames, protocol, serial setup, selected outputs, and alignment/navigation start times without storing NTRIP or map secrets.
+
+The Integrated Navigation status shows the active target output rate. The 100 Hz default corresponds to a 10 ms guidance period and does not change propagation on every IMU sample. Recording is causal: prior real-time inertial rows are not rewritten, the current row is the result replayed and corrected when GNSS arrives, and later rows propagate from that corrected state. Use `effective_self_aim_config.output_rate_hz` in the session JSON for post-run interpretation. Unsupported F9P firmware counters are displayed as unavailable rather than as measured zeros.
+
+The navigation frame is North-East-Down and the body frame is Front-Right-Down. The configured `body_from_sensor` 3x3 matrix explicitly converts MPU6050 sensor axes into FRD and is shared by alignment and integrated navigation.
 
 If acquisition starts twice within the same second, the next folder is suffixed with `_01` so existing data is never overwritten.
 

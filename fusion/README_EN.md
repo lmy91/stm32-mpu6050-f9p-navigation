@@ -1,15 +1,21 @@
-# Navigation Fusion Layer (Planned)
+# PC Real-Time Alignment and GNSS/INS Loose Coupling
 
 [中文](README.md) | English
 
-The repository currently provides time synchronization, the serial protocol, logging, and visualization. This directory is reserved for navigation estimation; it does not yet contain an EKF that publishes a fused position solution.
+`realtime_self_aim.py` performs coarse/fine alignment. `realtime_loose_navigation.py` then copies the final AVP, biases, covariance and GPS epoch and runs a PC-side 15-state closed-loop GNSS/INS filter. The Qt Integrated Navigation tab displays the fused WGS-84 track, NED velocity, FRD attitude, delay/replay diagnostics, and can record `nav.csv`; alignment remains available as `aim.csv`. A GPS epoch is written only once using its final corrected solution, while `session.json` captures the exact effective runtime configuration for reproducibility.
 
-Recommended implementation order:
+The workflow is configuration binding, coarse alignment, fine alignment, then the explicit **Finish fine alignment and start integrated navigation** action. Fine alignment otherwise runs continuously. The next timestamped IMU sample continues from the copied fine-alignment state without a reset.
 
-1. Define common states and frames (NED navigation frame, quaternion attitude, and WGS-84 input are recommended).
-2. Drive 100 Hz INS mechanization with each `IMU` record's `gps_week + gps_tow_us`.
-3. Update position and velocity from `GNSS` records on the same GPS time axis.
-4. Apply Allan parameters, installation-angle calibration, and antenna lever-arm compensation in a loosely coupled error-state EKF.
-5. Later add F9P raw pseudorange, Doppler, carrier phase, and RTK status interfaces for tight coupling.
+The IMU model now uses the latest long-duration Allan result in `data/allan_results/imu_noise/allan_parameters.csv`. Gyroscope ARW and accelerometer VRW drive the measurement white-noise terms. Each gyro and accelerometer bias axis is a stationary first-order Gauss-Markov process: `phi=exp(-dt/tau)` and `Q=sigma^2[1-exp(-2dt/tau)]`. Allan bias instability supplies the stationary GM sigma; initial bias covariance is configured separately on the P page. The geometric midpoint of each fitted BI plateau is used as an auditable initial correlation time. The nominal process is centred on the turn-on bias estimated during coarse alignment rather than absolute zero. RRW/rate-ramp values are intentionally excluded because the long-period data were contaminated by a temperature change exceeding 2 deg C.
 
-Fusion input should reuse [serial protocol v3](../README_EN.md#protocol-v3) and the canonical CSV outputs instead of introducing a second, inconsistent time representation.
+The R page selects real-time or fixed GNSS noise. Real-time mode builds `position sigma=[hAcc,hAcc,vAcc]` and `velocity sigma=[sAcc,sAcc,sAcc]` for every F9P epoch; an invalid or zero reported value falls back to the configured default. Fixed mode always uses the configured three-axis defaults.
+
+A short GNSS outage never stops propagation. The navigation worker retains `navigation_buffer_seconds` of IMU samples and state snapshots. A delayed GNSS position/velocity observation restores the state at its actual epoch, performs the update, and replays every later buffered IMU sample to the newest processed epoch. Measurements older than `maximum_gnss_age_s` or the retained history are rejected. Innovation gates remain disabled; validity, age, hAcc, sAcc and PDOP checks remain active.
+
+Fine alignment uses closed-loop error-state bias feedback. Bias errors are defined as estimated minus true bias. After every accepted GNSS update, the nominal estimates are corrected with `b_g <- b_g-delta_b_g` and `b_a <- b_a-delta_b_a`, then the 15-state error vector is reset. Every subsequent IMU sample is mechanized with `omega_m-b_g` and `f_m-b_a`; raw recorded IMU values are not modified.
+
+An MPU6050 cannot reliably gyrocompass while static, so heading is accepted only from the manual value in Algorithm Configuration and is never replaced by GNSS course. During fine alignment it is applied as a heading constraint with configurable standard deviation, so yaw error is estimated and fed back. At the coarse-to-fine transition, the current roll/pitch/manual heading are used, velocity is initialized to zero, and position is initialized from the mean of all valid coarse-stage GNSS positions. The live 15 physical states and all 15 standard deviations are displayed and optionally recorded throughout every stage.
+
+Navigation axes are North-East-Down (NED), and body axes are Front-Right-Down (FRD). `body_from_sensor` remains the explicit 3x3 IMU-sensor-to-FRD rotation used by both alignment and navigation; raw IMU logging is unchanged. Serial reception, Qt parsing/display and the single-owner navigation worker are separated, with a bounded typed-data queue between them.
+
+This is a research/integration prototype, not flight-certified software. Local-origin reset for long trajectories, higher-order coning/sculling, complete calibration-state estimation, redundancy/FDE and raw-observation tight coupling remain future work. Fusion input reuses [serial protocol v3](../README_EN.md#protocol-v3).

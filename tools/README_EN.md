@@ -20,7 +20,15 @@ These tools match STM32 serial protocol v3 and separately save GPS-timestamped I
 
 `python tools/inspect_f9p.py COM3` sends only UBX polls, not VALSET, reset or RTCM. Verify the native USB port first; do not substitute the STM32 COM7. A false `config_response_received` means no configuration response was received, not that the settings equal zero.
 
-`capture_serial.py` remains capture-only and ignores the new `#RTCM` comment reports. Use Qt for normal NTRIP injection; never open COM7 in two programs simultaneously.
+`capture_serial.py` remains capture-only in normal PC CLI use. In Raspberry Pi
+service mode, explicit `--ntrip-control` enables NTRIP and consumes `#RTCM`
+credit reports inside the sole UART owner. Never open one port in two programs.
+
+In Raspberry Pi service mode, the script continuously publishes live position
+but creates the three CSV files only while a volatile control file exists. With
+`--ubx-port`, it also records the original F9P stream as `f9p.ubx` in that session.
+Stopping recording leaves the UART and live position running. Normal PC CLI use
+still starts recording immediately, and the web process never opens the UART.
 
 After closing Qt and stopping other correction injectors, run `python tools/check_rtcm_bridge.py COM7 --seconds 40 --bnc <private-config-path>` to test the real Qt path. Without `--bnc`, it only reads acquisition statistics. The test writes no files, credentials or coordinates. Exit code 2 means the base-enabled test did not meet error-free, loss-free capture and positive receiver-feedback checks; it is not by itself proof of a UART defect.
 
@@ -47,6 +55,19 @@ Save only selected types:
     D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --save imu gnss
 
 Any combination of `imu`, `gnss`, and `rawx` is accepted; all three are enabled by default. Runs started within the same second receive an `_01` suffix and never overwrite existing data.
+
+For the Raspberry Pi GPIO5/RXD2 tap of F9P UART1, add the second serial port:
+
+    python3 tools/capture_serial.py /dev/ttyAMA0 --baud 460800 --ubx-port /dev/ttyAMA2 --ubx-baud 115200
+
+This creates `f9p.ubx` in the same session. The second reader continuously drains
+the UART but writes bytes only while recording is active; bytes are not decoded or modified.
+
+The capture tool prints one flushed status line every five seconds with the recent IMU rate,
+cumulative GNSS/RAWX/SAT counts, lost frames, invalid lines, and elapsed time. Use
+`--status-interval 2` for a two-second interval or `--status-interval 0` to disable periodic
+status output. Direct terminal runs refresh the same line in place; on the Raspberry Pi systemd
+deployment, use `gnss-imu-status` for the same single-line view.
 
 The capture tool reports lost IMU frames, invalid lines, and satellite records. `SAT`/`SAT_END` records are counted but not duplicated into the GNSS navigation table.
 

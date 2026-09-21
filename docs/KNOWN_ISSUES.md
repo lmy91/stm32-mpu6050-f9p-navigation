@@ -20,9 +20,15 @@
 
 ### P1：IMU 硬件中断覆盖可观测性
 
-固件已经统计 `g_debug_interrupt_overruns`，但当前状态协议没有输出该计数。Qt 的“丢帧”只比较成功输出的样本序号；极端负载下如果新的 DATA_RDY 覆盖了尚未处理的捕获值，连续样本号本身不能揭示这类物理缺样。
+固件已经统计 `g_debug_interrupt_overruns`（软件级单槽 mailbox 被覆盖的次数），但当前状态协议没有输出该计数。Qt 的“丢帧”只比较成功输出的样本序号；极端负载下如果新的 DATA_RDY 覆盖了尚未处理的捕获值，连续样本号本身不能揭示这类物理缺样。
 
-计划：扩展状态行并在 Qt/日志中显示中断覆盖、I2C 错误及异常采样间隔。保持数据协议 v3 的 IMU 行不变。
+**已完成（固件侧）**：TIM2 输入捕获新增硬件 overcapture 观测——定义 `TIM_CC1OF`/`TIM_CC2OF` 标志，新增累计量 `g_debug_cc2_overcapture`（在清标志前统计 `CC2OF`）。`g_debug_interrupt_overruns` 语义保持不变。两者检测不同层级，不可互相替代：`interrupt_overruns` 反映主循环消费跟不上（软件覆盖），`cc2_overcapture` 反映 CCR2 在 CCxIF 未清期间被新边沿覆盖（硬件 overcapture）。注意 `CC2OF` 是一位事件标志，只说明“至少发生一次覆盖”，不是丢失 epoch 的精确计数。
+
+原先因读取 CCRx 自动清除 CCxIF 后、又依据旧 SR 快照显式清除 CCxIF 所产生的竞态，已通过取消对 CC1IF/CC2IF 的冗余软件清除消除。同理，`CCxOF`/`UIF` 也改为在 ISR 开头读取 SR 快照后**立即 acknowledge**，避免在 ISR 尾部依据旧快照误清本次执行期间新产生的 overcapture/溢出事件。输入边沿在 CCRx 尚未读取前再次到达造成的硬件 overcapture，则仍是定时器本身的正常行为，并通过 CCxOF 进行观测。
+
+此外修复了 16-bit TIM2 回卷（约 65.536 ms）与 CCR 读取之间的时间戳竞态：读 CCR 后补读一次 `TIM2_SR & TIM_UIF`，与 ISR 开头的 SR 快照 OR 后传入 `timer_capture_time()`，由其半周期判别（`capture < 0x8000`）正确判定捕获所在的高位 epoch，避免时间戳少算一次溢出（差 65.536 ms）。新产生的 UIF 只读取不清除，退出 ISR 后由 UIF 中断再次进入并累加 `g_timer_overflows`。
+
+**剩余（第二阶段）**：把 `interrupt_count`、`interrupt_overruns`、`cc2_overcapture` 及基于相邻 `g_data_ready_us` 差值的 `dt` 异常计数（如 `dt > 15000 µs`）输出到 `# sync` 状态行，并在 Qt/日志中显示。保持数据协议 v3 的 IMU 行不变。相邻 `g_data_ready_us` 的时间差本身就是最强的缺样证据：正常 overcapture 会表现为 dt 跳变到 ~20/30 ms，而非保持 10 ms。
 
 ### P2：RAWX 历元完整性校验
 

@@ -4,20 +4,32 @@
 
 This project is a low-cost GNSS/INS testbed. An STM32F103 timestamps MPU6050 data from ZED-F9P 1PPS and outputs 1 Hz navigation, sky-view, and RXM-RAWX observations. Qt records separate IMU, navigation, and raw-observation files.
 
-The current release implements the synchronized acquisition and visualization foundation. It does not yet publish a loosely coupled EKF or tightly coupled pseudorange/Doppler solution. Validate timing, sensor noise, installation angles, and lever arms first, then add the fusion layer.
+The current release also includes a PC-side local-NED self-aiming/loosely coupled prototype using synchronized F9P position/velocity and MPU6050 data. Tight pseudorange/Doppler coupling is not yet implemented. Validate timing, sensor noise, installation angles, lever arms, and reference trajectories before operational use.
 
 ## Features
 
 - 100 Hz MPU6050 acceleration, angular rate, and temperature
-- F9P 10 Hz internal navigation with 1 Hz NAV-PVT, NAV-SAT, RXM-RAWX, and TIM-TP output
+- F9P 10 Hz internal navigation with 1 Hz NAV-PVT, NAV-SAT, RXM-RAWX, and TIM-TP output plus every RXM-SFRBX navigation word
 - Hardware capture of PPS on PA0/TIM2_CH1 and IMU DATA_RDY on PA1/TIM2_CH2
 - GPS week and microsecond TOW on every IMU sample
 - WGS-84 position, altitude, NED/ground speed, fix, satellite count, and PDOP
 - Qt IMU/speed plots, local/AMap track, and multi-constellation sky plot
 - Exact pseudorange, carrier phase, Doppler, C/N0, quality flags, and signal/frequency IDs
-- Independently selectable IMU/navigation/RAWX CSV logging in Qt, plus separate command-line recording
+- Independently selectable IMU/navigation/RAWX CSV logging in Qt, plus optional alignment `aim.csv` and realtime fused `nav.csv`; AIM/NAV sessions also include a secret-free `session.json` with the exact effective runtime settings
 - Allan analysis directly reads the canonical 21-column IMU v3 files produced during capture
 - Direct NTRIP v2 reception in Qt, credit-controlled RTCM forwarding through STM32, and receiver-reported RTK status
+
+The Raspberry Pi starts live positioning and its dashboard at boot, available at
+`http://192.168.137.2:8080`. Recording is off by default and can be started or
+stopped from the page without interrupting live positioning. Each Raspberry Pi
+session contains three CSV files and the original `f9p.ubx` stream. The web process
+never opens either UART. Phone networking and optional AMap setup are documented in
+[`raspberry_pi5/LIVE_DASHBOARD.md`](raspberry_pi5/LIVE_DASHBOARD.md).
+The same NTRIP session can be controlled from the Pi terminal with
+`gnss-imu-base connect/status/reconnect/disconnect`; password input is hidden.
+The dashboard also includes an allowlisted service console and output pane for
+status, logs, networking, storage, recording, NTRIP, and safe service restarts;
+it does not expose an unrestricted Linux shell.
 
 ## Wiring
 

@@ -6,12 +6,26 @@ import pathlib
 import tempfile
 import unittest
 
-from tools.capture_serial import (GNSS_COLUMNS, RAWX_COLUMNS, parse_gnss,
+from tools.capture_serial import (CsvRecorder, F9pUbxTap, GNSS_COLUMNS, IMU_COLUMNS,
+                                  RAWX_COLUMNS, imu_live_sample, parse_gnss, parse_imu,
                                   create_session_directory, parse_rawx_header,
-                                  parse_rawx_measurement)
+                                  parse_rawx_measurement, parse_satellite,
+                                  parse_satellite_end)
 
 
 class GnssProtocolTests(unittest.TestCase):
+    def test_live_imu_payload_uses_deg_s(self) -> None:
+        parsed = parse_imu(
+            "IMU,7,2435,123456000,1,999000,16384,0,-16384,0,131,-262,0".split(","),
+            None, None)
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        live = imu_live_sample(parsed[0])
+        self.assertAlmostEqual(live["ax_m_s2"], 9.80665)
+        self.assertAlmostEqual(live["az_m_s2"], -9.80665)
+        self.assertAlmostEqual(live["gx_deg_s"], 1.0)
+        self.assertAlmostEqual(live["gy_deg_s"], -2.0)
+
     def test_protocol_v3_fields_and_units(self) -> None:
         line = (
             "GNSS,2420,123000,1,987654321,3,25,195,0,2,"
@@ -65,6 +79,47 @@ class GnssProtocolTests(unittest.TestCase):
             second = create_session_directory(root, "20260908180500")
             self.assertEqual(first.name, "20260908180500")
             self.assertEqual(second.name, "20260908180500_01")
+
+    def test_recorder_can_start_and_stop_without_closing_source(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            recorder = CsvRecorder(pathlib.Path(parent), {"imu", "gnss"})
+            session = recorder.start()
+            self.assertTrue(recorder.active)
+            self.assertIsNotNone(session)
+            recorder.write("imu", [0] * len(IMU_COLUMNS))
+            recorder.write("gnss", [0] * len(GNSS_COLUMNS))
+            recorder.stop()
+            self.assertFalse(recorder.active)
+            assert session is not None
+            self.assertTrue((session / "imu.csv").is_file())
+            self.assertTrue((session / "gnss.csv").is_file())
+            self.assertFalse((session / "rawx.csv").exists())
+
+    def test_ubx_tap_writes_exact_binary_bytes_into_same_session(self) -> None:
+        with tempfile.TemporaryDirectory() as parent:
+            session = pathlib.Path(parent) / "20260912120000"
+            session.mkdir()
+            tap = F9pUbxTap("unused-test-port", 115200)
+            path = tap.start_recording(session)
+            data = b"\xb5\x62\x02\x15\x00\x00\x17\x4a"
+            tap._record_data(data)  # pylint: disable=protected-access
+            self.assertEqual(tap.snapshot()["recorded_bytes"], len(data))
+            tap.stop_recording()
+            self.assertEqual(path.read_bytes(), data)
+            self.assertFalse(tap.active)
+
+    def test_satellite_epoch_rows_for_live_sky_plot(self) -> None:
+        satellite = parse_satellite(
+            "SAT,2435,123000,1,3,19,47,35,-20,1".split(","))
+        self.assertEqual(satellite, {
+            "gps_week": 2435, "gps_tow_ms": 123000, "time_valid": 1,
+            "gnss_id": 3, "sv_id": 19, "cno_dbhz": 47,
+            "elev_deg": 35, "azim_deg": 340, "used": 1,
+        })
+        self.assertEqual(parse_satellite_end(
+            "SAT_END,2435,123000,1,25".split(",")), (2435, 123000, 1, 25))
+        self.assertIsNone(parse_satellite(
+            "SAT,2435,123000,1,3,19,47,91,0,1".split(",")))
 
 
 if __name__ == "__main__":

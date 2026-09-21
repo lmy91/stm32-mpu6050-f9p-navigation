@@ -2,24 +2,113 @@
 
 [中文](README.md) | [English](README_EN.md)
 
-这是一个面向低成本 GNSS/INS 的实时实验平台：STM32F103 在同一个硬件定时器时钟域内捕获 MPU6050 DATA_RDY 与 ZED-F9P 1PPS，把每个 IMU 样本标记为 GPS 周/周内微秒，同时以 1 Hz 输出 GNSS 导航解、天空图及 RAWX 原始观测。Qt 上位机完成实时显示、地图轨迹和 IMU/GNSS/RAWX 分文件记录。
+这是一个面向低成本 GNSS/INS 的实时实验平台：STM32F103 在同一个硬件定时器时钟域内捕获 MPU6050 DATA_RDY 与 ZED-F9P 1PPS，把每个 IMU 样本标记为 GPS 周/周内微秒，同时以 1 Hz 输出 GNSS 导航解、天空图及 RAWX 原始观测。Qt 上位机完成实时显示、地图轨迹、分文件记录，并提供 PC 端实时自瞄/松组合原型。
 
-当前版本完成的是组合导航的同步采集与可视化基础层，尚未把松组合 EKF 或紧组合伪距/多普勒滤波写入导航解算输出。建议先用本项目完成数据质量、时间同步和杆臂标定验证，再在 `fusion/` 中加入后续算法。
+当前版本已加入使用同步 IMU 与 F9P 位置/速度的局部 NED 松组合自瞄原型；紧组合伪距/多普勒滤波尚未实现。该算法用于联调研究，正式使用前仍需完成数据质量、安装角、杆臂、延迟和参考轨迹验证。
 
 ## 当前能力
 
 - MPU6050：100 Hz，加速度、角速度、温度
-- F9P：内部导航 10 Hz，对 STM32 输出 NAV-PVT/NAV-SAT/RXM-RAWX/TIM-TP 各 1 Hz
+- F9P：内部导航10 Hz；NAV-PVT/NAV-SAT/RXM-RAWX/TIM-TP以1 Hz输出，RXM-SFRBX逐条输出
 - PA0/TIM2_CH1 捕获 GNSS PPS，PA1/TIM2_CH2 捕获 IMU DATA_RDY
 - 每条 IMU 数据直接携带 `gps_week`、`gps_tow_us` 和 `time_valid`
 - GNSS 数据包含 WGS-84 坐标、海拔、NED/地面速度、定位类型、卫星数、PDOP
 - Qt 显示 IMU 曲线、速度曲线、本地轨迹/高德地图和多星座天空图
 - 原始观测包含伪距、载波相位、多普勒、锁定时间、C/N0、质量位及信号/频点标识
-- Qt 可独立选择保存 IMU/GNSS导航/RAWX原始观测 CSV，命令行工具也支持分文件记录
+- Qt 可独立选择保存 IMU/GNSS导航/RAWX原始观测 CSV，并可选保存 PC 对准结果 `aim.csv` 和实时松组合结果 `nav.csv`；选择AIM/NAV时同时生成不含密钥的 `session.json`，记录本次实际生效参数
 - Allan方差工具直接读取采集器生成的当前21列IMU v3文件
 - Qt 直连 NTRIP v2，经同一个 COM7 将 RTCM3 下发到 STM32，再由 PA2 转发给 F9P；显示各级接收/转发计数及 RTK 浮点/固定状态
 
+## 树莓派服务切换：ICM ↔ MPU
+
+同一块树莓派上，ICM 项目（`pi5-icm42688p-f9p-logger`）与本项目（MPU）使用
+**完全相同的 systemd 服务名**（`gnss-imu-logger.service`、
+`gnss-imu-dashboard.service`），并且都独占 `/dev/ttyAMA0`（460800）和
+`/dev/ttyAMA2`（115200）。因此两套服务不能同时运行，切换时必须先停掉一套
+再启用另一套，否则会发生串口争用。
+
+### 从 ICM 切换到 MPU（关闭 ICM，打开 MPU）
+
+在树莓派上执行：
+
+```bash
+# 1. 若 ICM 正在采集，先安全停止保存
+gnss-imu-record-stop
+
+# 2. 停止并禁止 ICM 的开机自启（ICM 还有第三个 time-sync 服务）
+sudo systemctl stop gnss-imu-logger.service gnss-imu-dashboard.service gnss-imu-time-sync.service
+sudo systemctl disable gnss-imu-logger.service gnss-imu-dashboard.service gnss-imu-time-sync.service
+
+# 3. 安装并启用 MPU 的服务（把服务文件复制到位并 enable --now）
+cd /home/lmy/stm32-mpu6050-f9p-navigation
+sudo cp raspberry_pi5/systemd/gnss-imu-logger.service \
+  /etc/systemd/system/gnss-imu-logger.service
+sudo cp raspberry_pi5/systemd/gnss-imu-dashboard.service \
+  /etc/systemd/system/gnss-imu-dashboard.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now gnss-imu-logger.service
+sudo systemctl enable --now gnss-imu-dashboard.service
+```
+
+校验 MPU 服务已正常运行：
+
+```bash
+systemctl status gnss-imu-logger.service gnss-imu-dashboard.service
+journalctl -u gnss-imu-logger.service -f
+```
+
+### 从 MPU 切回 ICM（关闭 MPU，打开 ICM）
+
+```bash
+# 1. 若 MPU 正在采集，先停止保存
+gnss-imu-record-stop
+
+# 2. 停止并禁止 MPU 的服务
+sudo systemctl stop gnss-imu-logger.service gnss-imu-dashboard.service
+sudo systemctl disable gnss-imu-logger.service gnss-imu-dashboard.service
+
+# 3. 回到 ICM 项目重新生成并启用服务
+cd /home/lmy/pi5-icm42688p-f9p-logger
+./scripts/install_services.sh
+```
+
+### 切换注意事项
+
+- 两个项目的 `gnss-imu-record-start/stop`、`gnss-imu-status`、`gnss-imu-base`
+  等命令名也相同，都是软链到各自项目的脚本。切换服务后要确认这些软链指向
+  当前生效的项目，否则采集/基站控制会落到错误的脚本上。
+- 服务文件里的用户和路径是硬编码的：MPU 为 `lmy` 和
+  `/home/lmy/stm32-mpu6050-f9p-navigation`，ICM 由 `install_services.sh` 按当前
+  用户和项目路径生成。若用户名或路径不同，需先修改服务文件再复制。
+- 正常切换顺序永远是「先 `record-stop`，再 `stop`，再 `disable`，最后
+  `enable --now` 新服务」。不要直接拔电源，避免损坏正在写入的 CSV/UBX 文件和
+  SD 卡文件系统。
+
 ## 硬件与接线
+
+树莓派5替代USB-TTL并为STM32供电的已验证方案见
+[`raspberry_pi5/README.md`](raspberry_pi5/README.md)。
+
+树莓派开机后可在PC浏览器打开`http://192.168.137.2:8080`实时查看GNSS位置、
+轨迹、速度、RTK状态、卫星数和PDOP。定位服务持续运行但默认不保存；输入命令
+或点击网页“开始采集”后才创建三个CSV和F9P原始`f9p.ubx`，停止保存不影响实时位置。网页服务不
+会再次打开串口；手机接入方法和高德地图设置见
+[`raspberry_pi5/LIVE_DASHBOARD.md`](raspberry_pi5/LIVE_DASHBOARD.md)。
+基站也可在树莓派终端通过`gnss-imu-base connect/status/reconnect/disconnect`
+控制；密码为隐藏输入，网页与终端显示的是同一个NTRIP会话。
+网页底部提供受限服务控制台和结果窗口，可查询状态、日志、网络与磁盘，控制
+保存和NTRIP，并安全重启采集或网页服务；不开放任意Linux Shell。
+
+停止采集后，可在Windows PowerShell中用RTKLIB的`convbin.exe`把`f9p.ubx`
+转换成完整的RINEX 3.04观测文件和混合导航文件：
+
+```powershell
+& "C:\Users\12597\Desktop\convbin.exe" -r ubx -v 3.04 -f 5 -od -os -oi -ot -ol -o ".\rover.obs" -n ".\rover.nav" ".\f9p.ubx"
+```
+
+应先停止采集并进入包含`f9p.ubx`的时间戳采集目录。参数解释、结果检查和
+树莓派等价命令见
+[`raspberry_pi5/LOGGER_SERVICE.md`](raspberry_pi5/LOGGER_SERVICE.md#转换rinex)。
 
 | 设备 | STM32F103C8T6 |
 | --- | --- |
@@ -32,9 +121,9 @@
 | C099 GND | GND |
 | USB-TTL RX/GND | PA9/GND |
 | USB-TTL TX（3.3V TTL） | PA10/USART1_RX |
-| ST-LINK | PA13 SWDIO、PA14 SWCLK、3.3V、GND |
+| ST-LINK | PA13 SWDIO、PA14 SWCLK、GND；供电线按当前供电模式选择，禁止与树莓派双路供电 |
 
-所有设备必须共地。USB-TTL RX 接 PA9，TX 接 PA10，电脑口为 460800 bit/s；F9P 与 STM32 之间为 115200 bit/s。保持 BOOT0=0，C099 J4 仅选择 `ARD`，不要同时短接 `UART1`/`UART3`。纯采集可以不接 PA10，RTCM 下发必须接。
+所有设备必须共地。树莓派与STM32的UART为460800 bit/s，F9P与STM32之间为115200 bit/s。保持BOOT0=0，C099 J4仅选择`ARD`，不要同时短接`UART1`/`UART3`。当前DCDC方案用VADJ经两根5V和两根GND专供Pi，固定5V分别独立供STM32和C099；ST-Link只接SWDIO、SWCLK、GND和可选RST，不接3.3V/5V。完整接线见[硬件接线详解](docs/硬件接线详解.md)。
 
 ## 数据链路
 
@@ -96,7 +185,7 @@ D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 0
 D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py data\decoded\20260908180500\imu.csv --rate 100 --skip-minutes 30
 ```
 
-详细说明见 [固件](firmware/README.md)、[Qt 上位机](host/README.md)、[工具](tools/README.md)、[组合导航算法规划](fusion/README.md)、[已知问题与后续加固](docs/KNOWN_ISSUES.md) 和 [Allan 方差说明](docs/Allan方差知识总结.md)。
+详细说明见 [硬件接线详解](docs/硬件接线详解.md)、[时间同步方案总结](docs/时间同步方案总结.md)、[固件](firmware/README.md)、[Qt 上位机](host/README.md)、[工具](tools/README.md)、[组合导航算法规划](fusion/README.md)、[已知问题与后续加固](docs/KNOWN_ISSUES.md)、[Allan 方差说明](docs/Allan方差知识总结.md) 和 [IMU 丢数可观测性与 TIM2 加固总结](docs/IMU丢数可观测性与TIM2加固总结.md)。
 
 ## 串口协议 v3
 
@@ -116,8 +205,8 @@ RAWX_END,num_meas
 
 1. 完成长时间静态采集、Allan 噪声辨识和安装角/杆臂标定。
 2. 加入惯导机械编排、静止检测和零速更新。
-3. 实现 F9P 位置/速度 + MPU6050 的松组合误差状态 EKF。
-4. 接入 RTCM/NTRIP 与 RTK 状态，再实现原始观测量紧组合。
+3. 校准、回放并完善当前 F9P 位置/速度 + MPU6050 松组合误差状态滤波。
+4. 在已接入 RTCM/NTRIP 与 RTK 状态基础上，实现原始观测量紧组合。
 
 ## 许可与来源
 

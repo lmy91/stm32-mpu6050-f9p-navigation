@@ -26,8 +26,8 @@
 2. 将 USB-TTL 插入电脑，关闭可能占用串口的串口助手。
 3. 点击“刷新串口”，选择对应 COM 端口。
 4. 波特率选择 460800，然后点击“连接”。
-5. “导航”页显示轨迹、速度、卫星数、PDOP 和天空图；“IMU”页显示传感器曲线。
-6. 按需勾选 `IMU`、`GNSS`、`RAWX`、`LOG`，或点击“全选”（包含 LOG）；连接时选择父目录，程序建立形如 `20260908180500` 的独立采集文件夹，并只创建已勾选的文件。LOG 默认不选，勾选后创建 `event.log`。全部不选时仅实时显示，连接期间保存选项锁定。
+5. 在“自瞄”页依次完成粗、精对准；精对准稳定后转到“组合导航”页，点击“结束精对准并启动组合导航”。该页实时显示组合位置地图、NED速度和FRD姿态时间序列，以及GNSS延迟、IMU重放耗时与缓存跨度。
+6. 按需勾选 `IMU`、`GNSS`、`RAWX`、`AIM`、`NAV`、`LOG`，或点击“一键存储”；全部选中后按钮变为“一键取消”，再次点击清除全部选择。连接时选择父目录，程序建立时间戳文件夹并只创建已勾选的文件。
 7. 采集结束先点击“断开”，再拔出 USB-TTL。
 
 高德地图暂不需要 Key 也能采集。获得 Web API Key（以及控制台要求的 securityJsCode）后填入导航页顶部并点击“加载高德地图”。F9P 的 WGS-84 坐标会在显示时转换为 GCJ-02；保存文件始终保留原始 WGS-84 坐标。
@@ -89,11 +89,19 @@ NTRIP 使用独立线程、直接 TCP、v2 请求，支持 HTTP chunked。帧经
     RAWX_MEAS,gnss_id,sv_id,sig_id,freq_id,pr_f64hex,cp_f64hex,do_f32hex,lock_ms,cno,pr_std,cp_std,do_std,trk_stat
     RAWX_END,num_meas
 
-每次采集文件夹中可选输出三个简写文件（只创建连接前勾选的类型）：
+每次采集文件夹中可选输出以下简写文件（只创建连接前勾选的类型，前三个仍为默认）：
 
 - `imu.csv`：GPS 周/周内微秒、STM32 捕获时间、IMU 原始值及物理量。
 - `gnss.csv`：GPS时间和接收时刻、位置/速度及精度、PDOP、定位类型、RTK状态和卫星数。
 - `rawx.csv`：接收时间、星座/卫星/信号、中心频率、伪距、载波相位、多普勒、C/N0和质量位。
+- `sync.csv`：勾选 IMU/GNSS/RAWX 任一后自动生成，每秒一行，记录 STM32 `# sync` 的六个累计计数器（`sample_count`、`interrupt_count`、`interrupt_overruns`、`cc2_overcapture`、`dt_gap_count`、`i2c_errors`）、相对上一条 `#sync` 的四个增量（`d_*`）和 `backlog`。四个 `d_*` 只表示相邻 `#sync` 之间新增事件数，不等于 lost samples；`backlog = interrupt_count - sample_count` 允许 0/1 相位波动，关注是否持续扩大。列定义见 [工具说明](../tools/README.md#sync-csv-诊断文件始终生成)。
+- `aim.csv`：配置启用AIM保存后，连续记录粗对准和精对准的15个物理状态、15维KF标准差、GNSS更新统计及精对准初始AVP。
+- `nav.csv`：配置启用NAV保存后，默认按100 Hz记录组合位置/速度/姿态、传感器零偏、15维标准差，以及GNSS延迟、重放点数/耗时和历史缓存跨度。同一个GPS时刻若先产生惯推输出、随后产生GNSS校正输出，只保留校正后的最终行，保证时间戳唯一；`output_source` 区分 `INS_PROPAGATION`、`GNSS_REPLAY_CORRECTED`、`GNSS_REJECTED_INS_CONTINUED` 和初值。
+- `session.json`：勾选AIM或NAV时自动创建，保存本次Qt实际生效的全部算法参数、参数来源、坐标系、协议版本、串口和所选输出；开始对准或组合导航时同步记录本机时刻。文件不保存NTRIP密码或高德密钥。
+
+组合导航页状态栏会明确显示当前“输出目标 Hz”。默认100 Hz对应10 ms制导周期，不改变按每颗IMU执行的内部递推。记录遵循实时因果顺序：GNSS到达前已经输出的历史惯推行不回改；到达时记录回退更新并重放到当前IMU时刻后的修正结果；后续行从修正状态继续递推。诊断时应以同目录 `session.json` 中的 `effective_self_aim_config.output_rate_hz` 为准。若旧固件没有提供F9P接收/使用计数，界面显示 `--/--/--（固件未提供计数）`，不会把缺失计数误报为真实的零。
+
+组合导航统一采用NED导航系（北、东、地）和FRD载体系（前、右、下）。算法配置中的 `body_from_sensor` 是IMU传感器坐标到FRD载体系的3×3转换矩阵，对准和组合导航共用；默认单位阵仅适用于两套轴完全重合的安装。
 
 若同一秒内重复开始采集，文件夹会自动命名为 `20260908180500_01` 等，已有数据不会被覆盖。
 

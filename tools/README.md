@@ -13,6 +13,7 @@
 | `check_rtcm_bridge.py` | 调用同一 Qt 代码短时检查 RTCM 链路 | 控制台统计，不生成文件 |
 | `inspect_f9p.py` | 在 F9P 原生 USB 口只读查询 UBX 状态 | 控制台摘要，`--details` 显示逐信号状态 |
 | `allan_noise_identification.py` | 直接读取标准 IMU CSV，辨识 Allan 随机误差 | `data/allan_results/` |
+| `check_sync.py` | 核对 sync.csv 诊断文件完整性 | 控制台统计，不生成文件 |
 
 ## 安装
 
@@ -20,7 +21,14 @@
 
 `python tools/inspect_f9p.py COM3` 仅查询接收机原生 USB 的状态/配置，不写 VALSET、不复位、不注入 RTCM。`config_response_received=false` 表示本次没有收到配置查询响应，不能当作配置值为零；COM3 必须由设备枚举确认，不能用 COM7 替代。
 
-`capture_serial.py` 保持纯采集，不建立 NTRIP 连接；它会忽略新固件的 `#RTCM` 反馈注释。日常 NTRIP 下发使用 Qt 的“连接基站”，不要同时用两个程序打开 COM7。
+`capture_serial.py` 在普通PC命令行模式下保持纯采集；树莓派服务显式配置
+`--ntrip-control`后，可在同一串口所有者内建立NTRIP并处理`#RTCM`信用反馈。
+Qt、树莓派采集器或其他串口程序仍不能同时打开同一个端口。
+
+树莓派服务模式下，脚本持续发布实时位置，但只有检测到易失控制文件时才创建
+和保存三个CSV；配置`--ubx-port`后还会同步保存F9P原始`f9p.ubx`。停止保存不
+关闭串口。每条1 Hz GNSS记录会立即刷新，网页进程读取独立实时状态文件，不占用
+串口。普通PC命令行用法仍默认立即保存。
 
 关闭 Qt 后，可用 `python tools/check_rtcm_bridge.py COM7 --seconds 40 --bnc <你的私有配置路径>` 验证同一 Qt 转发代码。先停止 BNC 等其他差分注入源。省略 `--bnc` 时只读采集统计，不下发数据。测试不创建 CSV/raw 文件夹，不打印密码或位置坐标；输出接收、转发、丢帧、定位状态与 F9P 反馈，退出码 2 表示带基站测试未满足无丢帧、无错误且 F9P 收到数据的检查条件，不代表一定是串口故障。
 
@@ -47,6 +55,18 @@
     D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --save imu gnss
 
 `--save imu`、`--save gnss`、`--save rawx` 可任意组合；默认三项全选。同一秒重复启动时会增加 `_01` 后缀，已有数据不会被覆盖。
+
+树莓派GPIO5/RXD2旁路接收F9P UART1时，可增加第二串口参数：
+
+    python3 tools/capture_serial.py /dev/ttyAMA0 --baud 460800 --ubx-port /dev/ttyAMA2 --ubx-baud 115200
+
+此时同一会话中额外生成`f9p.ubx`。第二串口线程持续排空接收缓冲，但只有开始
+采集后才落盘；文件按原始二进制字节保存，不进行文本解码或改写。
+
+采集器默认每5秒输出一次实时状态，包括最近周期IMU频率、累计GNSS/RAWX/SAT、
+丢帧数、无效行数和运行时间。可用`--status-interval 2`改为每2秒显示，或设为
+0关闭周期显示。直接在终端运行时，状态会在同一行原位刷新；systemd后台运行
+时可使用树莓派的`gnss-imu-status`命令查看同样的单行刷新状态。
 
 采集器统计IMU丢帧、无效行和卫星记录；`SAT`/`SAT_END` 用于计数，不重复写入GNSS导航表。
 
@@ -79,6 +99,35 @@
 `time_valid=1` 表示GPS时间有效；经纬度为WGS-84。采集器只接受协议v3完整记录。角速度以deg/h保存，Allan工具内部转换为rad/s。
 
 RAWX CSV 将位模式还原为接收机原始浮点值，并给出 `signal` 和 `frequency_mhz`。GLONASS中心频率会结合 `freq_id` 的频率槽计算；未知的新信号仍保留原始ID，不会丢弃观测。
+
+### sync.csv 诊断文件（始终生成）
+
+每次采集会话目录下**始终生成** `sync.csv`（每秒一行，独立于 `--save` 选择），记录 STM32 `# sync` 行的六个累计计数器、相对上一条 `#sync` 的四个增量，以及 backlog：
+
+```text
+unix_ms,pps,sample_count,interrupt_count,interrupt_overruns,cc2_overcapture,dt_gap_count,i2c_errors,d_interrupt_overruns,d_cc2_overcapture,d_dt_gap_count,d_i2c_errors,backlog
+```
+
+| 列 | 含义 |
+| --- | --- |
+| `unix_ms` | 本机接收该行时刻（毫秒） |
+| `pps` | PPS 序号 |
+| `sample_count` | 成功输出的 IMU 样本累计数 |
+| `interrupt_count` | ISR 观察到的 DATA_RDY capture 累计数 |
+| `interrupt_overruns` | 软件单槽 mailbox 被覆盖的累计数 |
+| `cc2_overcapture` | TIM2 CCR2 硬件 overcapture 累计数 |
+| `dt_gap_count` | `dt > 15 ms` 的 epoch 缺口累计数 |
+| `i2c_errors` | I2C 读取失败累计数 |
+| `d_*` 四个 | 相对上一条 `#sync` 的新增事件数（无符号 32 位差分） |
+| `backlog` | `interrupt_count - sample_count`（无符号 32 位） |
+
+语义要点：
+
+- 四个 `d_*` **只表示相邻 `#sync` 之间新增的事件数**，不等于 lost samples；静止正常时均为 0。任一 `d_* > 0` 才表示上一秒新发生了对应异常。
+- `backlog = interrupt_count - sample_count`：允许在 0/1 之间随 `#sync` 与主循环处理 DATA_RDY 的相位关系波动；需要关注的是**是否持续扩大**（如 1,1,2,3,4…），而不是单值是否为 1。
+- 所有累计计数器是 32 位、可回绕，PC 端差分按无符号模 2³² 计算，长期运行也不会误报负数。
+
+`check_sync.py` 只读核对 `sync.csv`：`python tools/check_sync.py <会话目录>/sync.csv`。
 
 ## 长时间采集建议
 

@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#08111f">
+  <meta name="description" content="MPU6050/F9P树莓派实时定位看板">
+  <title>GNSS 实时位置</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='27' fill='%2308111f' stroke='%232bd9fe' stroke-width='5'/%3E%3Cpath d='M32 12v40M12 32h40' stroke='%232bd9fe' stroke-width='3'/%3E%3Ccircle cx='32' cy='32' r='7' fill='%23ffb84d'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">MPU6050 / ZED-F9P</p>
+        <h1>实时定位</h1>
+      </div>
+      <div class="service-states" aria-label="服务状态">
+        <div class="live-state" id="positionState"><span class="status-dot"></span><span>定位服务检查中</span></div>
+        <div class="live-state" id="recordingState"><span class="status-dot"></span><span>采集状态检查中</span></div>
+        <div class="live-state" id="ntripState"><span class="status-dot"></span><span>基站：未连接</span></div>
+      </div>
+    </header>
+
+    <section class="metrics" aria-label="实时GNSS状态">
+      <article><span>定位状态</span><strong id="fixText">--</strong></article>
+      <article><span>卫星数</span><strong id="satellites">--</strong></article>
+      <article><span>PDOP</span><strong id="pdop">--</strong></article>
+      <article><span>地速</span><strong id="speed">--</strong><small>m/s</small></article>
+      <article><span>水平精度</span><strong id="hAcc">--</strong><small>m</small></article>
+    </section>
+
+    <section class="record-controls" aria-label="差分基站控制">
+      <div>
+        <strong>RTK 差分基站</strong>
+        <span id="ntripHint">未连接；可通过 NTRIP 将 RTCM 经 STM32 转发到 F9P</span>
+      </div>
+      <div class="record-actions">
+        <button id="ntripConnect" type="button">连接基站</button>
+        <button id="ntripDisconnect" class="danger" type="button" disabled>断开基站</button>
+      </div>
+    </section>
+
+    <section class="record-controls" aria-label="数据保存控制">
+      <div>
+        <strong>采集文件</strong>
+        <span id="recordHint">定位服务开机运行；只有开始采集后才保存CSV和原始UBX</span>
+      </div>
+      <div class="record-actions">
+        <button id="startRecording" type="button">开始采集</button>
+        <button id="stopRecording" class="danger" type="button" disabled>停止采集</button>
+      </div>
+    </section>
+
+    <section class="workspace">
+      <article class="map-card">
+        <div class="map-toolbar">
+          <div class="segmented" role="group" aria-label="地图类型">
+            <button id="localButton" class="active" type="button">本地轨迹</button>
+            <button id="amapButton" type="button">高德地图</button>
+          </div>
+          <button id="fitButton" class="quiet" type="button">最佳窗口</button>
+          <button id="settingsButton" class="quiet" type="button">地图设置</button>
+        </div>
+        <div class="map-stage">
+          <canvas id="trackCanvas" aria-label="本地等比例GNSS轨迹"></canvas>
+          <div id="amap" hidden></div>
+          <div class="map-empty" id="mapEmpty">等待GNSS位置…</div>
+          <div class="north">N</div>
+        </div>
+        <div class="map-footer">
+          <span id="pointCount">轨迹 0 点</span>
+          <span>WGS-84存储 · 高德显示转换GCJ-02</span>
+        </div>
+      </article>
+
+      <aside class="details">
+        <article class="panel position-panel">
+          <div class="panel-heading"><span>当前位置</span><span id="gpsTime" class="mono">--</span></div>
+          <dl>
+            <div><dt>纬度</dt><dd id="latitude">--</dd></div>
+            <div><dt>经度</dt><dd id="longitude">--</dd></div>
+            <div><dt>高程</dt><dd id="height">--</dd></div>
+          </dl>
+        </article>
+        <article class="panel">
+          <div class="panel-heading"><span>NED速度</span><span class="unit">m/s</span></div>
+          <div class="velocity-grid">
+            <div><span>N 北</span><strong id="velN">--</strong></div>
+            <div><span>E 东</span><strong id="velE">--</strong></div>
+            <div><span>D 地</span><strong id="velD">--</strong></div>
+          </div>
+        </article>
+        <article class="panel health-panel">
+          <div class="panel-heading"><span>数据链路</span><span id="age">--</span></div>
+          <p id="session">采集会话：--</p>
+          <p id="message">正在读取树莓派数据</p>
+        </article>
+      </aside>
+    </section>
+
+    <section class="imu-card" aria-label="实时IMU监测">
+      <div class="imu-heading">
+        <div><p class="eyebrow">MPU6050 / WEB SAMPLE 1 Hz</p><h2>IMU实时监测</h2></div>
+        <div class="imu-summary"><strong id="imuState">等待IMU</strong><span id="imuAge">--</span></div>
+      </div>
+      <div class="imu-values" aria-label="最新IMU数值">
+        <article><span>Ax</span><strong id="imuAx">--</strong><small>m/s²</small></article>
+        <article><span>Ay</span><strong id="imuAy">--</strong><small>m/s²</small></article>
+        <article><span>Az</span><strong id="imuAz">--</strong><small>m/s²</small></article>
+        <article><span>Gx</span><strong id="imuGx">--</strong><small>deg/s</small></article>
+        <article><span>Gy</span><strong id="imuGy">--</strong><small>deg/s</small></article>
+        <article><span>Gz</span><strong id="imuGz">--</strong><small>deg/s</small></article>
+        <article><span>温度</span><strong id="imuTemp">--</strong><small>°C</small></article>
+      </div>
+      <div class="imu-charts">
+        <article class="imu-chart-panel">
+          <div class="imu-chart-title"><span>三轴加速度</span><span class="axis-legend"><i class="axis-x"></i>X <i class="axis-y"></i>Y <i class="axis-z"></i>Z</span></div>
+          <canvas id="accelCanvas" aria-label="三轴加速度一秒采样时间曲线"></canvas>
+        </article>
+        <article class="imu-chart-panel">
+          <div class="imu-chart-title"><span>三轴角速度</span><span class="axis-legend"><i class="axis-x"></i>X <i class="axis-y"></i>Y <i class="axis-z"></i>Z</span></div>
+          <canvas id="gyroCanvas" aria-label="三轴陀螺仪一秒采样时间曲线"></canvas>
+        </article>
+        <article class="imu-chart-panel temperature-chart">
+          <div class="imu-chart-title"><span>温度</span><span class="axis-legend"><i class="axis-temp"></i>MPU6050</span></div>
+          <canvas id="temperatureCanvas" aria-label="MPU6050温度一秒采样时间曲线"></canvas>
+        </article>
+      </div>
+      <div class="imu-footer">串口仍按100 Hz采集；网页每秒读取一个最新样本，保留最近120秒，不增加STM32串口数据量。</div>
+    </section>
+
+    <section class="sky-card" aria-label="实时卫星天空图">
+      <div class="sky-heading">
+        <div><p class="eyebrow">NAV-SAT / 1 Hz</p><h2>卫星天空图</h2></div>
+        <div class="sky-summary"><strong id="skyCount">-- 颗</strong><span id="skyAge">等待卫星历元</span></div>
+      </div>
+      <div class="sky-stage">
+        <canvas id="skyCanvas" aria-label="卫星方位角和仰角极坐标图"></canvas>
+      </div>
+      <div class="sky-legend" aria-label="卫星星座图例">
+        <span class="gps">GPS</span><span class="gal">Galileo</span><span class="bds">北斗</span>
+        <span class="glo">GLONASS</span><span class="qzss">QZSS</span><span class="sbas">SBAS</span>
+        <small>实心：用于导航　空心：未使用　圆心：90°仰角</small>
+      </div>
+    </section>
+
+    <section class="console-card" aria-label="树莓派服务控制台">
+      <div class="console-heading">
+        <div><p class="eyebrow">ALLOWLISTED SERVICE CONSOLE</p><h2>树莓派服务命令</h2></div>
+        <span>仅支持定位、采集、基站和诊断白名单命令</span>
+      </div>
+      <div class="console-shortcuts" aria-label="常用命令">
+        <button type="button" data-command="status">总状态</button>
+        <button type="button" data-command="base status">基站状态</button>
+        <button type="button" data-command="logs logger 40">采集日志</button>
+        <button type="button" data-command="network">网络</button>
+        <button type="button" data-command="disk">磁盘</button>
+        <button type="button" data-command="help">帮助</button>
+      </div>
+      <form id="commandForm" class="command-line" autocomplete="off">
+        <label for="commandInput">pi$</label>
+        <input id="commandInput" maxlength="160" spellcheck="false"
+               placeholder="输入 help 查看可用命令" aria-label="服务命令">
+        <button id="commandRun" type="submit">执行</button>
+      </form>
+      <pre id="commandOutput" class="command-output" tabindex="0">输入 help 查看可用命令。此处不开放任意Shell、sudo、关机或删除操作。</pre>
+    </section>
+  </main>
+
+  <dialog id="settingsDialog">
+    <form method="dialog">
+      <div class="dialog-head"><h2>高德地图设置</h2><button value="cancel" aria-label="关闭">×</button></div>
+      <label>Web JS API Key<input id="amapKey" autocomplete="off" placeholder="输入高德 Key"></label>
+      <label>安全密钥 securityJsCode<input id="amapSecurity" type="password" autocomplete="off" placeholder="输入安全密钥"></label>
+      <p>仅保存在当前浏览器，不会上传到树莓派或写入采集文件。</p>
+      <menu><button value="cancel" class="quiet">取消</button><button id="saveMapSettings" value="default">保存并加载</button></menu>
+    </form>
+  </dialog>
+  <dialog id="ntripDialog">
+    <form method="dialog">
+      <div class="dialog-head"><h2>NTRIP 基站设置</h2><button value="cancel" aria-label="关闭">×</button></div>
+      <div class="field-pair">
+        <label>服务器<input id="ntripHost" autocomplete="off" value="ntrip.gnsswhu.cn"></label>
+        <label>端口<input id="ntripPort" type="number" min="1" max="65535" value="2101"></label>
+      </div>
+      <label>挂载点<input id="ntripMount" autocomplete="off" value="WUH200CHN0"></label>
+      <label>用户名<input id="ntripUser" autocomplete="username"></label>
+      <label>密码<input id="ntripPassword" type="password" autocomplete="current-password"></label>
+      <p>账号只写入树莓派内存盘 /run，断开或重启后清除。请仅在可信局域网中使用本页面。</p>
+      <menu><button value="cancel" class="quiet">取消</button><button id="saveNtrip" value="default">连接</button></menu>
+    </form>
+  </dialog>
+  <script src="/app.js"></script>
+</body>
+</html>

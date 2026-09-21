@@ -1,14 +1,19 @@
+import csv
+import json
 import os
 import pathlib
 import tempfile
 import unittest
+from dataclasses import fields, replace
 from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5 import QtWidgets
+import numpy as np
 
-from imu_serial_qt import NavigationMonitor
+from imu_serial_qt import NavigationMonitor, SelfAimConfigDialog
+from fusion import GnssObservation, NavigationSolution, RealtimeSelfAim
 
 
 RAWX_HEADER = b"RAWX,2420,405EC00000000000,18,1,1,1,987654321"
@@ -56,6 +61,177 @@ class SerialProtocolTest(unittest.TestCase):
         self.monitor.select_all_logs()
         self.assertTrue(all(checkbox.isChecked()
                             for checkbox in self.monitor.save_checkboxes.values()))
+        self.assertEqual(self.monitor.select_all_button.text(), "一键取消")
+        self.monitor.select_all_logs()
+        self.assertFalse(any(checkbox.isChecked()
+                             for checkbox in self.monitor.save_checkboxes.values()))
+        self.assertEqual(self.monitor.select_all_button.text(), "一键存储")
+
+    def test_self_aim_page_contains_ten_time_series_plots(self):
+        self.assertEqual(len(self.monitor.aim_series_plots), 10)
+        self.assertEqual(len(self.monitor.aim_series_curves), 30)
+        self.assertEqual(len(self.monitor.aim_value_labels), 5)
+        self.assertEqual(set(self.monitor.aim_series_curves),
+                         set(self.monitor.aim_history) - {"time"})
+        self.assertEqual(self.monitor.aim_series_groups, [
+            ("pn", "pe", "pd"), ("vn", "ve", "vd"),
+            ("roll", "pitch", "heading"), ("gbx", "gby", "gbz"),
+            ("abx", "aby", "abz"), ("std_pn", "std_pe", "std_pd"),
+            ("std_vn", "std_ve", "std_vd"),
+            ("std_roll", "std_pitch", "std_heading"),
+            ("std_gbx", "std_gby", "std_gbz"),
+            ("std_abx", "std_aby", "std_abz")])
+
+    def test_loose_navigation_page_has_map_and_ned_frd_curves(self):
+        self.assertEqual(set(self.monitor.nav_curves),
+                         {"vn", "ve", "vd", "roll", "pitch", "heading"})
+        self.assertIsNot(self.monitor.fusion_map_widget, self.monitor.map_widget)
+        self.assertEqual(set(self.monitor.nav_history),
+                         {"time", "vn", "ve", "vd", "roll", "pitch", "heading"})
+
+    def test_manual_fine_alignment_button_uses_algorithm_heading(self):
+        monitor = self.monitor
+        monitor.self_aim_config = replace(
+            monitor.self_aim_config, initial_heading_deg=123.4567)
+        monitor.self_aim = RealtimeSelfAim(monitor.self_aim_config)
+        monitor.start_self_aim()
+        self.assertTrue(monitor.self_aim.running)
+        monitor.self_aim.update_gnss(GnssObservation(
+            100.0, 30.0, 114.0, 20.0, np.zeros(3), True, 0.1, 0.1, 1.0))
+        monitor.self_aim.update_imu(100.0, (0, 0, -9.80665), (0, 0, 0), 0.01)
+        monitor.self_aim.update_imu(100.01, (0, 0, -9.80665), (0, 0, 0), 0.01)
+        monitor.last_aim_solution = monitor.self_aim.solution()
+        monitor.start_fine_alignment()
+        self.assertEqual(monitor.self_aim.stage, "精对准")
+        self.assertFalse(monitor.aim_manual_fine_button.isEnabled())
+        self.assertFalse(hasattr(monitor, "aim_navigation_button"))
+        monitor._update_aim_labels(monitor.self_aim.solution())
+        self.assertEqual((monitor.aim_progress.minimum(), monitor.aim_progress.maximum()),
+                         (0, 0))
+        self.assertEqual(monitor.aim_stop_button.text(), "停止对准")
+        self.assertTrue(monitor.nav_start_button.isEnabled())
+
+    def test_aim_csv_header_matches_full_state_row(self):
+        monitor = self.monitor
+        for checkbox in monitor.save_checkboxes.values(): checkbox.setChecked(False)
+        monitor.save_checkboxes["AIM"].setChecked(True)
+        with tempfile.TemporaryDirectory() as directory:
+            with (mock.patch.object(QtWidgets.QFileDialog, "getExistingDirectory",
+                                    return_value=directory),
+                  mock.patch("imu_serial_qt.time.strftime", return_value="20260910120000")):
+                self.assertTrue(monitor._open_logs())
+            monitor.self_aim.start()
+            monitor.self_aim.update_gnss(GnssObservation(
+                100.0, 30.0, 114.0, 20.0, np.zeros(3), True, 0.1, 0.1, 1.0))
+            solution = monitor.self_aim.update_imu(
+                100.0, (0, 0, -9.80665), (0, 0, 0), 0.01)
+            monitor._consume_aim_solution(solution)
+            monitor._close_logs()
+            path = pathlib.Path(directory) / "20260910120000" / "aim.csv"
+            with path.open(encoding="utf-8") as stream:
+                rows = list(csv.reader(stream))
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(len(rows[0]), len(rows[1]))
+            self.assertEqual(len(rows[0]), 52)
+
+    def test_nav_csv_header_matches_solution_row(self):
+        monitor = self.monitor
+        for checkbox in monitor.save_checkboxes.values(): checkbox.setChecked(False)
+        monitor.save_checkboxes["NAV"].setChecked(True)
+        with tempfile.TemporaryDirectory() as directory:
+            with (mock.patch.object(QtWidgets.QFileDialog, "getExistingDirectory",
+                                    return_value=directory),
+                  mock.patch("imu_serial_qt.time.strftime", return_value="20260910120100")):
+                self.assertTrue(monitor._open_logs())
+            solution = NavigationSolution(
+                100.0, 1.0, True, "组合导航运行", 30.0, 114.0, 20.0,
+                (1.0, 2.0, 3.0), (0.1, 0.2, 0.3), 1.0, 2.0, 3.0,
+                (0.01, 0.02, 0.03), (0.1, 0.2, 0.3), tuple(range(15)),
+                1, 0, "已更新", 0.15, 15, 0.8, 2.0)
+            monitor._consume_navigation_solution(solution)
+            monitor._close_logs()
+            path = pathlib.Path(directory) / "20260910120100" / "nav.csv"
+            with path.open(encoding="utf-8") as stream:
+                rows = list(csv.reader(stream))
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(len(rows[0]), len(rows[1]))
+            self.assertEqual(len(rows[0]), 46)
+
+    def test_nav_same_epoch_keeps_only_latest_corrected_solution(self):
+        monitor = self.monitor
+        for checkbox in monitor.save_checkboxes.values(): checkbox.setChecked(False)
+        monitor.save_checkboxes["NAV"].setChecked(True)
+        with tempfile.TemporaryDirectory() as directory:
+            with (mock.patch.object(QtWidgets.QFileDialog, "getExistingDirectory",
+                                    return_value=directory),
+                  mock.patch("imu_serial_qt.time.strftime", return_value="20260910120200")):
+                self.assertTrue(monitor._open_logs())
+            base = NavigationSolution(
+                100.0, 1.0, True, "惯导递推", 30.0, 114.0, 20.0,
+                (1.0, 2.0, 3.0), (0.1, 0.2, 0.3), 1.0, 2.0, 3.0,
+                (0.01, 0.02, 0.03), (0.1, 0.2, 0.3), tuple(range(15)),
+                0, 0, "等待GNSS", float("nan"), 0, 0.0, 2.0)
+            corrected = replace(base, status="GNSS校正", velocity_ned_m_s=(4.0, 5.0, 6.0),
+                                gnss_updates=1, last_gnss_reason="已更新")
+            following = replace(corrected, gps_time_s=100.1, elapsed_s=1.1,
+                                velocity_ned_m_s=(7.0, 8.0, 9.0))
+            monitor._consume_navigation_solution(base)
+            monitor._consume_navigation_solution(corrected)
+            self.assertEqual(len(monitor.nav_history["time"]), 1)
+            self.assertEqual(monitor.nav_history["vn"][-1], 4.0)
+            monitor._consume_navigation_solution(following)
+            monitor._close_logs()
+            path = pathlib.Path(directory) / "20260910120200" / "nav.csv"
+            with path.open(encoding="utf-8") as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual(len(rows), 2)
+            self.assertEqual([float(row["gps_time_s"]) for row in rows], [100.0, 100.1])
+            self.assertEqual(float(rows[0]["vel_n_m_s"]), 4.0)
+            self.assertEqual(int(rows[0]["gnss_updates"]), 1)
+            self.assertEqual(rows[0]["output_source"], "GNSS_REPLAY_CORRECTED")
+            self.assertEqual(rows[1]["output_source"], "INS_PROPAGATION")
+
+    def test_algorithm_session_saves_exact_effective_config_without_secrets(self):
+        monitor = self.monitor
+        for checkbox in monitor.save_checkboxes.values(): checkbox.setChecked(False)
+        monitor.save_checkboxes["AIM"].setChecked(True)
+        monitor.self_aim_config = replace(monitor.self_aim_config, output_rate_hz=7.5)
+        with tempfile.TemporaryDirectory() as directory:
+            with (mock.patch.object(QtWidgets.QFileDialog, "getExistingDirectory",
+                                    return_value=directory),
+                  mock.patch("imu_serial_qt.time.strftime", return_value="20260910120300")):
+                self.assertTrue(monitor._open_logs())
+            session = pathlib.Path(directory) / "20260910120300"
+            metadata = json.loads((session / "session.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["serial_protocol"], "v3")
+            self.assertEqual(metadata["navigation_frame"], "NED")
+            self.assertEqual(metadata["body_frame"], "FRD")
+            self.assertEqual(metadata["effective_self_aim_config"]["output_rate_hz"], 7.5)
+            serialized = json.dumps(metadata).lower()
+            self.assertNotIn("password", serialized)
+            self.assertNotIn("amap", serialized)
+            monitor._close_logs()
+            closed = json.loads((session / "session.json").read_text(encoding="utf-8"))
+            self.assertIn("closed_local", closed)
+
+    def test_algorithm_dialog_exposes_all_configuration_groups(self):
+        monitor = self.monitor
+        dialog = SelfAimConfigDialog(monitor.self_aim_config,
+                                     monitor.self_aim_config_path, monitor)
+        config = dialog.current_config()
+        self.assertEqual(dialog.tabs.count(), 6)
+        represented = (set(dialog.scalar_widgets) | set(dialog.vector_widgets)
+                       | set(dialog.bool_widgets)
+                       | {"initial_heading_deg", "body_from_sensor"})
+        self.assertEqual(represented, {field.name for field in fields(type(config))})
+        self.assertEqual(config.coarse_alignment_seconds,
+                         monitor.self_aim_config.coarse_alignment_seconds)
+        self.assertEqual(config.body_from_sensor,
+                         tuple(tuple(row) for row in monitor.self_aim_config.body_from_sensor))
+        self.assertEqual(config.lever_arm_body_m,
+                         tuple(monitor.self_aim_config.lever_arm_body_m))
+        self.assertEqual(config.output_rate_hz, monitor.self_aim_config.output_rate_hz)
+        dialog.close()
 
     def test_only_selected_log_is_created(self):
         for checkbox in self.monitor.save_checkboxes.values():
@@ -109,7 +285,7 @@ class SerialProtocolTest(unittest.TestCase):
             self.assertEqual({p.name for p in session.iterdir()}, {"event.log"})
             self.assertIsNone(m.event_stream)
 
-    def test_select_all_creates_four_files_and_protects_active_log(self):
+    def test_select_all_creates_session_files_and_protects_active_log(self):
         m = self.monitor
         self.assertFalse(m.save_checkboxes["LOG"].isChecked())
         m.select_all_logs()
@@ -126,7 +302,14 @@ class SerialProtocolTest(unittest.TestCase):
             self.assertEqual(before, path.read_text(encoding="utf-8"))
             m._close_logs()
             self.assertEqual({p.name for p in session.iterdir()},
-                             {"imu.csv", "gnss.csv", "rawx.csv", "event.log"})
+                             {"imu.csv", "gnss.csv", "rawx.csv", "aim.csv", "nav.csv",
+                              "event.log", "session.json"})
+
+    def test_missing_f9p_firmware_counters_are_not_reported_as_real_zeros(self):
+        report = [3, 1, 1000, 1000, 0, 0, 0, 0, 0, 0, 621, 1077, 100]
+        self.assertIn("--/--/--", self.monitor._format_f9p_counters(report))
+        report[7:10] = [10, 9, 0]
+        self.assertIn("10/9/0", self.monitor._format_f9p_counters(report))
 
     def test_log_write_failure_does_not_recurse_or_close_csv(self):
         m = self.monitor

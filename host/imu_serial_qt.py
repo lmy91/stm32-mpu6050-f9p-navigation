@@ -7,11 +7,17 @@ import json
 import math
 import os
 import pathlib
+import queue
 import struct
 import sys
 import time
 import urllib.parse
 from collections import deque
+from dataclasses import asdict
+
+SOURCE_ROOT = pathlib.Path(__file__).resolve().parent.parent
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
 
 # QtWebEngine/Chromium hardware acceleration is unstable with some Windows
 # display drivers. The map is only 1 Hz, so software composition is preferable
@@ -26,6 +32,8 @@ from serial.tools import list_ports
 from serial_worker import SerialWorker
 from ntrip_rtcm import (BridgeFlow, NtripClient, NtripSettingsDialog,
                        NTRIP_DEFAULT_HOST, NTRIP_DEFAULT_PORT, NTRIP_DEFAULT_MOUNT)
+from fusion import (GnssObservation, ImuSample, NavigationInitialState,
+                    RealtimeLooseNavigation, RealtimeSelfAim, SelfAimConfig)
 
 try:
     from PyQt5 import QtWebEngineWidgets
@@ -36,8 +44,10 @@ G0 = 9.80665
 ACCEL_SCALE = G0 / 16384.0
 GYRO_DEG_H_SCALE = 3600.0 / 131.0
 GPS_WEEK_SECONDS = 604800.0
-PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
+PROJECT_ROOT = pathlib.Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else SOURCE_ROOT
+RESOURCE_ROOT = pathlib.Path(getattr(sys, "_MEIPASS", SOURCE_ROOT))
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "decoded"
+DEFAULT_AIM_CONFIG = RESOURCE_ROOT / "fusion" / "self_aim_config.json"
 LOG_LEVEL_VALUES = {"DEBUG": 10, "INFO": 20, "WARN": 30, "ERROR": 40}
 GNSS_NAMES = {0: "GPS", 1: "SBAS", 2: "GAL", 3: "BDS", 4: "IMES", 5: "QZSS", 6: "GLO"}
 GNSS_COLORS = {
@@ -54,6 +64,41 @@ RAWX_COLUMNS = [
     "pr_stdev_m", "cp_stdev_cycles", "do_stdev_hz", "pr_valid",
     "cp_valid", "half_cycle", "sub_half_cycle",
 ]
+# Observability counters emitted once per PPS in the "# sync" line. The four
+# "d_" columns are unsigned-32 deltas vs. the previous # sync (first row = 0);
+# backlog = interrupt_count - sample_count.
+SYNC_COLUMNS = [
+    "unix_ms", "pps",
+    "sample_count", "interrupt_count", "interrupt_overruns",
+    "cc2_overcapture", "dt_gap_count", "i2c_errors",
+    "d_interrupt_overruns", "d_cc2_overcapture", "d_dt_gap_count", "d_i2c_errors",
+    "backlog",
+]
+SYNC_COUNTERS = ("sample_count", "interrupt_count", "interrupt_overruns",
+                 "cc2_overcapture", "dt_gap_count", "i2c_errors")
+
+
+def parse_sync_line(line: str) -> dict[str, int] | None:
+    """Parse one "# sync,key=value,..." diagnostic line into its counters."""
+    if not line.startswith("# sync,"):
+        return None
+    fields: dict[str, str] = {}
+    for item in line[len("# sync,"):].split(","):
+        if "=" in item:
+            key, value = item.split("=", 1)
+            fields[key] = value
+    try:
+        return {name: int(fields[name]) for name in SYNC_COUNTERS} | {
+            "pps": int(fields.get("pps", "0"))}
+    except (KeyError, ValueError):
+        return None
+
+
+def u32_delta(current: int, previous: int) -> int:
+    """Unsigned 32-bit difference to survive firmware counter wrap."""
+    return (current - previous) & 0xFFFFFFFF
+
+
 SIGNALS = {
     (0, 0): ("GPS_L1CA", 1575.42), (0, 3): ("GPS_L2CL", 1227.60),
     (0, 4): ("GPS_L2CM", 1227.60), (1, 0): ("SBAS_L1CA", 1575.42),
@@ -371,6 +416,301 @@ function clearTrack(){{if(!window.mapReady)return;path=[];line.setPath(path);if(
         QtWidgets.QMessageBox.warning(self, "高德地图加载失败", reason)
 
 
+class SelfAimConfigDialog(QtWidgets.QDialog):
+    """Edit every SelfAimConfig field without hand-editing JSON."""
+
+    VECTOR_FIELDS = (
+        "lever_arm_body_m", "initial_attitude_std_deg", "initial_velocity_std_m_s",
+        "initial_position_std_m", "initial_gyro_bias_std_deg_h",
+        "initial_accel_bias_std_mg", "default_velocity_measurement_std_m_s",
+        "default_position_measurement_std_m",
+        "gyro_arw_deg_sqrt_h", "accel_vrw_m_s_sqrt_h",
+        "gyro_bias_sigma_deg_h", "accel_bias_sigma_mg",
+        "gyro_bias_correlation_time_s", "accel_bias_correlation_time_s")
+
+    def __init__(self, config: SelfAimConfig, path: pathlib.Path,
+                 parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("自瞄算法配置"); self.setModal(True); self.resize(760, 650)
+        self.config_path = pathlib.Path(path); self.result_config = config
+        outer = QtWidgets.QVBoxLayout(self)
+        file_row = QtWidgets.QHBoxLayout()
+        self.path_label = QtWidgets.QLabel(str(self.config_path)); self.path_label.setTextInteractionFlags(
+            QtCore.Qt.TextSelectableByMouse); self.path_label.setToolTip(str(self.config_path))
+        for title, callback in (("从文件导入…", self.import_config),
+                                ("保存到文件…", self.save_config),
+                                ("恢复默认值", self.restore_defaults)):
+            button = QtWidgets.QPushButton(title); button.clicked.connect(callback); file_row.addWidget(button)
+        file_row.addWidget(self.path_label, 1); outer.addLayout(file_row)
+        self.tabs = QtWidgets.QTabWidget(); outer.addWidget(self.tabs, 1)
+        self.scalar_widgets = {}; self.vector_widgets = {}; self.bool_widgets = {}
+        self._build_timing_tab(); self._build_initial_p_tab(); self._build_process_q_tab()
+        self._build_measurement_r_tab(); self._build_quality_tab(); self._build_installation_tab()
+        note = QtWidgets.QLabel("点击“应用”只更新本次运行参数；需要长期保留时请先使用“保存到文件…”。")
+        note.setStyleSheet("color:#666"); outer.addWidget(note)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons.button(QtWidgets.QDialogButtonBox.Ok).setText("应用")
+        buttons.accepted.connect(self.validate_and_accept); buttons.rejected.connect(self.reject)
+        outer.addWidget(buttons); self.set_config(config)
+
+    @staticmethod
+    def _form_page() -> tuple[QtWidgets.QWidget, QtWidgets.QFormLayout]:
+        page = QtWidgets.QWidget(); form = QtWidgets.QFormLayout(page)
+        form.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
+        return page, form
+
+    def _double(self, form, key, label, unit="", maximum=1e9, decimals=4, tip=""):
+        widget = QtWidgets.QDoubleSpinBox(); widget.setRange(0.0, maximum)
+        widget.setDecimals(decimals); widget.setSuffix(f" {unit}" if unit else "")
+        widget.setKeyboardTracking(False); widget.setToolTip(tip)
+        form.addRow(label, widget); self.scalar_widgets[key] = widget
+
+    def _vector(self, form, key, label, unit, tip):
+        widget = QtWidgets.QLineEdit(); widget.setPlaceholderText("x, y, z")
+        widget.setToolTip(tip); form.addRow(f"{label} [{unit}]", widget)
+        self.vector_widgets[key] = widget
+
+    def _build_timing_tab(self):
+        page, form = self._form_page(); self.tabs.addTab(page, "对准设置")
+        self._double(form, "coarse_alignment_seconds", "粗对准时长", "s", 86400, 1)
+        samples = QtWidgets.QSpinBox(); samples.setRange(2, 100000000)
+        form.addRow("粗对准最少IMU样本", samples); self.scalar_widgets["minimum_imu_samples"] = samples
+        self.initial_heading = QtWidgets.QDoubleSpinBox(); self.initial_heading.setRange(0.0, 359.9999)
+        self.initial_heading.setDecimals(4); self.initial_heading.setSuffix(" °")
+        self.initial_heading.setToolTip("必须手动装订；真北为0°，顺时针为正，不使用GNSS航迹自动替换")
+        form.addRow("手动装订初始航向", self.initial_heading)
+        self._double(form, "navigation_buffer_seconds", "组合导航历史缓存", "s", 60, 1,
+                     "必须不小于最大GNSS时间差；100Hz下5秒约500帧")
+        self._double(form, "output_rate_hz", "对准/导航记录输出频率", "Hz", 1000, 2)
+
+    def _build_quality_tab(self):
+        page, form = self._form_page(); self.tabs.addTab(page, "GNSS质量门限")
+        for key, label, unit, maximum in (
+                ("maximum_gnss_age_s", "最大GNSS时间差", "s", 60),
+                ("maximum_hacc_m", "最大水平精度hAcc", "m", 10000),
+                ("maximum_sacc_m_s", "最大速度精度sAcc", "m/s", 1000),
+                ("maximum_pdop", "最大PDOP", "", 100)):
+            self._double(form, key, label, unit, maximum, 3)
+
+    def _build_installation_tab(self):
+        page, form = self._form_page(); self.tabs.addTab(page, "安装与杆臂")
+        self.matrix_rows = []
+        matrix_box = QtWidgets.QWidget(); matrix_layout = QtWidgets.QGridLayout(matrix_box)
+        matrix_layout.setContentsMargins(0, 0, 0, 0)
+        for row in range(3):
+            edits = []
+            for column in range(3):
+                edit = QtWidgets.QDoubleSpinBox(); edit.setRange(-1.0, 1.0); edit.setDecimals(8)
+                edit.setSingleStep(0.01); matrix_layout.addWidget(edit, row, column); edits.append(edit)
+            self.matrix_rows.append(edits)
+        matrix_box.setToolTip("传感器坐标到载体前-右-下(FRD)坐标的右手正交旋转矩阵")
+        form.addRow("传感器→载体旋转矩阵", matrix_box)
+        self._vector(form, "lever_arm_body_m", "IMU→天线杆臂 x,y,z", "m",
+                     "载体系前、右、下三个分量")
+
+    def _build_initial_p_tab(self):
+        page, form = self._form_page(); self.tabs.addTab(page, "初始P阵")
+        definitions = (
+            ("initial_attitude_std_deg", "姿态初始1σ R,P,H", "deg"),
+            ("initial_velocity_std_m_s", "速度初始1σ N,E,D", "m/s"),
+            ("initial_position_std_m", "位置初始1σ N,E,D", "m"),
+            ("initial_gyro_bias_std_deg_h", "陀螺零偏初始1σ x,y,z", "deg/h"),
+            ("initial_accel_bias_std_mg", "加计零偏初始1σ x,y,z", "mg"))
+        for key, label, unit in definitions:
+            self._vector(form, key, label, unit, "用于15维误差状态初始协方差P0的对角项")
+
+    def _build_process_q_tab(self):
+        page, form = self._form_page(); self.tabs.addTab(page, "初始Q阵")
+        definitions = (
+            ("gyro_arw_deg_sqrt_h", "陀螺ARW x,y,z", "deg/√h",
+             "Allan -1/2斜率拟合得到的角度随机游走"),
+            ("accel_vrw_m_s_sqrt_h", "加计VRW x,y,z", "m/s/√h",
+             "Allan -1/2斜率拟合得到的速度随机游走"),
+            ("gyro_bias_sigma_deg_h", "陀螺零偏GM稳态1σ x,y,z", "deg/h",
+             "Allan零偏不稳定性作为一阶高斯-马尔可夫稳态标准差"),
+            ("accel_bias_sigma_mg", "加计零偏GM稳态1σ x,y,z", "mg",
+             "Allan零偏不稳定性作为一阶高斯-马尔可夫稳态标准差"),
+            ("gyro_bias_correlation_time_s", "陀螺零偏GM相关时间 x,y,z", "s",
+             "当前取各轴Allan零偏平台拟合区间的几何中心，必须大于0"),
+            ("accel_bias_correlation_time_s", "加计零偏GM相关时间 x,y,z", "s",
+             "当前取各轴Allan零偏平台拟合区间的几何中心，必须大于0"))
+        for key, label, unit, tip in definitions:
+            self._vector(form, key, label, unit, tip)
+
+    def _build_measurement_r_tab(self):
+        page, form = self._form_page(); self.tabs.addTab(page, "初始R阵")
+        mode = QtWidgets.QComboBox()
+        mode.addItem("实时值（F9P hAcc/vAcc/sAcc）", True)
+        mode.addItem("固定默认值", False)
+        mode.setToolTip("实时模式：位置1σ=[hAcc,hAcc,vAcc]，速度1σ=[sAcc,sAcc,sAcc]；无效分量回退默认值")
+        form.addRow("GNSS噪声来源", mode)
+        self.bool_widgets["use_realtime_gnss_accuracy"] = mode
+        self._double(form, "heading_measurement_std_deg", "装订航向量测1σ", "deg", 180, 3,
+                     "精对准期间航向约束对应的R阵标准差")
+        self._vector(form, "default_position_measurement_std_m",
+                     "默认位置1σ N,E,D", "m", "实时精度关闭或无效时使用")
+        self._vector(form, "default_velocity_measurement_std_m_s",
+                     "默认速度1σ N,E,D", "m/s", "实时精度关闭或无效时使用")
+
+    @staticmethod
+    def _format_vector(value) -> str:
+        return ", ".join(f"{float(item):.10g}" for item in value)
+
+    @staticmethod
+    def _parse_vector(text: str, name: str) -> tuple[float, float, float]:
+        parts = [part.strip() for part in text.replace("，", ",").split(",")]
+        if len(parts) != 3: raise ValueError(f"{name} 必须填写三个逗号分隔的数值")
+        try: values = tuple(float(part) for part in parts)
+        except ValueError as error: raise ValueError(f"{name} 包含非数值内容") from error
+        if not all(math.isfinite(value) for value in values): raise ValueError(f"{name} 必须为有限数值")
+        return values
+
+    def set_config(self, config: SelfAimConfig) -> None:
+        for key, widget in self.scalar_widgets.items(): widget.setValue(getattr(config, key))
+        self.initial_heading.setValue(config.initial_heading_deg % 360)
+        for row in range(3):
+            for column in range(3): self.matrix_rows[row][column].setValue(config.body_from_sensor[row][column])
+        for key, widget in self.vector_widgets.items(): widget.setText(self._format_vector(getattr(config, key)))
+        for key, widget in self.bool_widgets.items():
+            index = widget.findData(bool(getattr(config, key)))
+            widget.setCurrentIndex(max(index, 0))
+
+    def current_config(self) -> SelfAimConfig:
+        values = {key: widget.value() for key, widget in self.scalar_widgets.items()}
+        values["minimum_imu_samples"] = int(values["minimum_imu_samples"])
+        values["initial_heading_deg"] = float(self.initial_heading.value())
+        values["body_from_sensor"] = tuple(tuple(widget.value() for widget in row)
+                                                   for row in self.matrix_rows)
+        for key, widget in self.vector_widgets.items():
+            values[key] = self._parse_vector(widget.text(), key)
+        for key, widget in self.bool_widgets.items(): values[key] = bool(widget.currentData())
+        config = SelfAimConfig(**values); config.validate(); return config
+
+    def import_config(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "导入自瞄配置", str(self.config_path), "JSON 配置 (*.json)")
+        if not path: return
+        try: config = SelfAimConfig.load(path)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            QtWidgets.QMessageBox.warning(self, "配置无效", str(error)); return
+        self.config_path = pathlib.Path(path); self.path_label.setText(path); self.path_label.setToolTip(path)
+        self.set_config(config)
+
+    def save_config(self) -> None:
+        try: config = self.current_config()
+        except ValueError as error:
+            QtWidgets.QMessageBox.warning(self, "参数无效", str(error)); return
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "保存自瞄配置", str(self.config_path), "JSON 配置 (*.json)")
+        if not path: return
+        try: config.save(path, self.config_path)
+        except OSError as error:
+            QtWidgets.QMessageBox.warning(self, "保存失败", str(error)); return
+        self.config_path = pathlib.Path(path); self.path_label.setText(path); self.path_label.setToolTip(path)
+
+    def restore_defaults(self) -> None:
+        self.set_config(SelfAimConfig())
+
+    def validate_and_accept(self) -> None:
+        try: self.result_config = self.current_config()
+        except ValueError as error:
+            QtWidgets.QMessageBox.warning(self, "参数无效", str(error)); return
+        self.accept()
+
+
+class LooseNavigationThread(QtCore.QThread):
+    """Single owner of the mutable INS/KF state; producers only enqueue data."""
+
+    solution_ready = QtCore.pyqtSignal(object)
+    failed = QtCore.pyqtSignal(str)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.commands: queue.Queue = queue.Queue(maxsize=4096)
+        self._shutdown_requested = False
+
+    def _submit(self, command, payload=None) -> bool:
+        if self._shutdown_requested:
+            return False
+        try:
+            self.commands.put_nowait((command, payload))
+            return True
+        except queue.Full:
+            return False
+
+    def start_navigation(self, config, initial) -> bool:
+        return self._submit("start", (config, initial))
+
+    def submit_imu(self, sample) -> bool:
+        return self._submit("imu", sample)
+
+    def submit_gnss(self, observation) -> bool:
+        return self._submit("gnss", observation)
+
+    def stop_navigation(self) -> bool:
+        if self._shutdown_requested:
+            return False
+        if self._submit("stop"):
+            return True
+        # Stopping has priority over stale sensor work.  A full queue already
+        # means continuity is lost, so discard it and terminate the estimator.
+        while True:
+            try: self.commands.get_nowait()
+            except queue.Empty: break
+        return self._submit("stop")
+
+    def shutdown(self) -> None:
+        self._shutdown_requested = True
+        while True:
+            try: self.commands.get_nowait()
+            except queue.Empty: break
+        try: self.commands.put_nowait(("shutdown", None))
+        except queue.Full: pass
+
+    def run(self) -> None:
+        engine = None
+        last_output_time = -math.inf
+        while True:
+            try:
+                command, payload = self.commands.get(timeout=0.1)
+                if command == "shutdown":
+                    break
+                if command == "start":
+                    config, initial = payload
+                    engine = RealtimeLooseNavigation(config)
+                    solution = engine.start(initial)
+                    last_output_time = -math.inf
+                    self.solution_ready.emit(solution)
+                elif command == "stop":
+                    if engine is not None and engine.running:
+                        self.solution_ready.emit(engine.stop())
+                    engine = None
+                elif command == "imu" and engine is not None and engine.running:
+                    solution = engine.update_imu(payload)
+                    if not solution.running:
+                        self.solution_ready.emit(solution)
+                        engine = None
+                        self.failed.emit(solution.status)
+                        continue
+                    interval = 1.0/max(engine.config.output_rate_hz, 1e-9)
+                    if (solution.gps_time_s is not None and
+                            solution.gps_time_s-last_output_time+1e-9 >= interval):
+                        last_output_time = solution.gps_time_s
+                        self.solution_ready.emit(solution)
+                elif command == "gnss" and engine is not None and engine.running:
+                    engine.update_gnss(payload)
+                    solution = engine.solution()
+                    if solution.gps_time_s is not None:
+                        last_output_time = solution.gps_time_s
+                    self.solution_ready.emit(solution)
+            except queue.Empty:
+                continue
+            except Exception as error:  # keep acquisition alive; stop only fusion
+                engine = None
+                self.failed.emit(f"{type(error).__name__}: {error}")
+
+
 class NavigationMonitor(QtWidgets.QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -386,14 +726,55 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self.serial_worker = None
         self.rx_buffer = bytearray(); self.discard_until_newline = False
         self.plot_paused = False
-        self.imu_stream = self.gnss_stream = self.rawx_stream = None
+        self.imu_stream = self.gnss_stream = self.rawx_stream = self.aim_stream = None
+        self.nav_stream = None
         self.event_stream = None
         self.imu_writer: csv.writer | None = None
         self.gnss_writer: csv.writer | None = None
         self.rawx_writer: csv.writer | None = None
+        self.aim_writer: csv.writer | None = None
+        self.nav_writer: csv.writer | None = None
+        self.sync_writer: csv.writer | None = None
+        self.sync_stream = None
+        self._prev_sync: dict[str, int] | None = None
+        self._sync_diag: dict[str, int] | None = None
+        self.pending_nav_row: list | None = None
+        self.pending_nav_time: float | None = None
+        self.last_navigation_history_time: float | None = None
+        self.last_navigation_seen_updates = 0
+        self.last_navigation_seen_rejections = 0
+        self.session_metadata_path: pathlib.Path | None = None
+        self.session_metadata: dict = {}
         self.rows_since_flush = 0
         self.imu = {name: deque() for name in ("time", "ax", "ay", "az", "gx", "gy", "gz", "temp")}
         self.speed = {name: deque() for name in ("time", "vn", "ve", "vd", "ground")}
+        self.aim_history = {name: deque() for name in (
+            "time", "pn", "pe", "pd", "vn", "ve", "vd", "roll", "pitch", "heading",
+            "gbx", "gby", "gbz", "abx", "aby", "abz",
+            "std_roll", "std_pitch", "std_heading", "std_vn", "std_ve", "std_vd",
+            "std_pn", "std_pe", "std_pd", "std_gbx", "std_gby", "std_gbz",
+            "std_abx", "std_aby", "std_abz")}
+        self.nav_history = {name: deque() for name in (
+            "time", "vn", "ve", "vd", "roll", "pitch", "heading")}
+        configured_path = pathlib.Path(str(self.settings.value("self_aim_config", DEFAULT_AIM_CONFIG)))
+        try:
+            self.self_aim_config = SelfAimConfig.load(configured_path)
+            self.self_aim_config_path = configured_path
+            self.self_aim_config_error = ""
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            self.self_aim_config = SelfAimConfig()
+            self.self_aim_config_path = DEFAULT_AIM_CONFIG
+            self.self_aim_config_error = str(error)
+        self.self_aim = RealtimeSelfAim(self.self_aim_config)
+        self.last_aim_solution = self.self_aim.solution()
+        self.last_aim_output_time = -math.inf
+        self.navigation_active = False
+        self.last_navigation_solution = None
+        self.last_navigation_map_time = -math.inf
+        self.navigation_worker = LooseNavigationThread(self)
+        self.navigation_worker.solution_ready.connect(self._consume_navigation_solution)
+        self.navigation_worker.failed.connect(self._navigation_failed)
+        self.navigation_worker.start()
         self.last_sample: int | None = None
         self.first_timer_us: int | None = None
         self.last_timer_us: int | None = None
@@ -416,6 +797,8 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self._logged_errors = (0, 0)
         self._build_ui(); self._build_timers(); self.refresh_ports()
         self.log_event("系统", "程序已启动；界面保留最近 5000 条，勾选 LOG 可随采集保存，也可手动导出。")
+        if self.self_aim_config_error:
+            self.log_event("自瞄", f"配置读取失败，已采用内置默认值：{self.self_aim_config_error}", "WARN")
 
     def _build_ui(self) -> None:
         pg.setConfigOptions(antialias=False, background="#101418", foreground="#d8dee9")
@@ -430,11 +813,13 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self.clear_button = QtWidgets.QPushButton("清空曲线"); self.clear_button.clicked.connect(self.clear_data)
         self.window_spin = QtWidgets.QSpinBox(); self.window_spin.setRange(10, 3600); self.window_spin.setValue(120); self.window_spin.setSuffix(" s")
         self.save_checkboxes: dict[str, QtWidgets.QCheckBox] = {}
-        for name in ("IMU", "GNSS", "RAWX", "LOG"):
-            checkbox = QtWidgets.QCheckBox(name); checkbox.setChecked(name != "LOG")
+        for name in ("IMU", "GNSS", "RAWX", "AIM", "NAV", "LOG"):
+            checkbox = QtWidgets.QCheckBox(name); checkbox.setChecked(name not in ("AIM", "NAV", "LOG"))
             self.save_checkboxes[name] = checkbox
+        self.save_checkboxes["AIM"].setToolTip("可选：保存 PC 实时自瞄解算结果 aim.csv")
+        self.save_checkboxes["NAV"].setToolTip("可选：保存 PC 实时松组合结果 nav.csv")
         self.save_checkboxes["LOG"].setToolTip("连接前勾选：本次日志保存到采集文件夹中的 event.log")
-        self.select_all_button = QtWidgets.QPushButton("全选")
+        self.select_all_button = QtWidgets.QPushButton("一键存储")
         self.select_all_button.clicked.connect(self.select_all_logs)
         self.connection_label = QtWidgets.QLabel("● 未连接"); self.connection_label.setStyleSheet("color:#ff6174;font-weight:bold")
         for text, widget in (("串口", self.port_combo), ("波特率", self.baud_combo), ("窗口", self.window_spin)):
@@ -451,8 +836,9 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self.loss_label = QtWidgets.QLabel("丢帧: 0"); self.time_label = QtWidgets.QLabel("GPS时间: 无效")
         self.fix_label = QtWidgets.QLabel("定位: --"); self.sv_label = QtWidgets.QLabel("卫星数: --")
         self.pdop_label = QtWidgets.QLabel("PDOP: --")
+        self.capture_label = QtWidgets.QLabel("Capture: --")
         for label in (self.rate_label, self.frames_label, self.loss_label, self.time_label,
-                      self.fix_label, self.sv_label, self.pdop_label):
+                      self.fix_label, self.sv_label, self.pdop_label, self.capture_label):
             label.setMinimumWidth(135); stats.addWidget(label)
         stats.addStretch(1); outer.addLayout(stats)
         ntrip_controls = QtWidgets.QHBoxLayout()
@@ -469,6 +855,8 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         outer.addWidget(self.rtcm_label)
         self.tabs = QtWidgets.QTabWidget(); self.tabs.addTab(self._build_navigation_tab(), "导航")
         self.tabs.addTab(self._build_imu_tab(), "IMU")
+        self.tabs.addTab(self._build_self_aim_tab(), "自瞄")
+        self.tabs.addTab(self._build_loose_navigation_tab(), "组合导航")
         self.tabs.addTab(self._build_event_log_tab(), "日志")
         outer.addWidget(self.tabs, 1)
         self.setCentralWidget(central)
@@ -591,8 +979,15 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         if report is not None:
             detail += (f"，STM32收/转发={report[2]}/{report[3]}B，"
                        f"丢字节/串口错={report[4]}/{report[5]}，"
-                       f"F9P收/使用/CRC错={report[7]}/{report[8]}/{report[9]}")
+                       f"{self._format_f9p_counters(report)}")
         return detail
+
+    @staticmethod
+    def _format_f9p_counters(report) -> str:
+        """Do not present unsupported firmware counters as measured zeros."""
+        if report[3] > 0 and report[7] == report[8] == report[9] == 0:
+            return "F9P收/使用/CRC错=--/--/--（固件未提供计数）"
+        return f"F9P收/使用/CRC错={report[7]}/{report[8]}/{report[9]}"
 
     def _brief_network_state(self) -> str:
         client = self.ntrip_client
@@ -675,6 +1070,393 @@ class NavigationMonitor(QtWidgets.QMainWindow):
             check = QtWidgets.QCheckBox(name.upper()); check.setChecked(True); check.toggled.connect(curve.setVisible); axes.addWidget(check)
         axes.addStretch(1); layout.addLayout(axes); return tab
 
+    def _build_self_aim_tab(self) -> QtWidgets.QWidget:
+        page = QtWidgets.QWidget(); layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(6, 6, 6, 6); layout.setSpacing(5)
+        controls = QtWidgets.QHBoxLayout(); controls.setSpacing(6)
+        self.aim_load_button = QtWidgets.QPushButton("算法配置…")
+        self.aim_load_button.clicked.connect(self.configure_self_aim_config)
+        self.aim_start_button = QtWidgets.QPushButton("开始粗对准")
+        self.aim_start_button.clicked.connect(self.start_self_aim)
+        self.aim_manual_fine_button = QtWidgets.QPushButton("立即进入精对准")
+        self.aim_manual_fine_button.clicked.connect(self.start_fine_alignment)
+        self.aim_manual_fine_button.setEnabled(False)
+        self.aim_stop_button = QtWidgets.QPushButton("停止对准")
+        self.aim_stop_button.clicked.connect(self.stop_self_aim); self.aim_stop_button.setEnabled(False)
+        self.aim_config_label = QtWidgets.QLabel(self.self_aim_config_path.name)
+        self.aim_config_label.setToolTip(str(self.self_aim_config_path))
+        for widget in (self.aim_load_button, self.aim_start_button,
+                       self.aim_manual_fine_button, self.aim_stop_button):
+            controls.addWidget(widget)
+        controls.addWidget(QtWidgets.QLabel("配置：")); controls.addWidget(self.aim_config_label)
+        controls.addStretch(1); layout.addLayout(controls)
+
+        status = QtWidgets.QHBoxLayout(); status.setSpacing(10)
+        self.aim_stage_label = QtWidgets.QLabel("未启动"); self.aim_stage_label.setStyleSheet("font-weight:bold")
+        self.aim_progress = QtWidgets.QProgressBar(); self.aim_progress.setRange(0, 1000)
+        self.aim_progress.setMaximumWidth(260); self.aim_progress.setMaximumHeight(20)
+        self.aim_time_label = QtWidgets.QLabel("用时 -- · 匹配 --")
+        self.aim_update_label = QtWidgets.QLabel("GNSS 0/0 · 尚无数据")
+        status.addWidget(QtWidgets.QLabel("阶段：")); status.addWidget(self.aim_stage_label)
+        status.addWidget(self.aim_progress); status.addWidget(self.aim_time_label)
+        status.addWidget(self.aim_update_label, 1); layout.addLayout(status)
+
+        live_values = QtWidgets.QGridLayout(); live_values.setHorizontalSpacing(14)
+        self.aim_value_labels = {}
+        for index, (key, title) in enumerate((
+                ("position", "位置 N/E/D"), ("velocity", "速度 N/E/D"),
+                ("attitude", "姿态 R/P/H"), ("gyro_bias", "陀螺零偏 X/Y/Z"),
+                ("accel_bias", "加表零偏 X/Y/Z"))):
+            label = QtWidgets.QLabel(f"{title}: --")
+            label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            self.aim_value_labels[key] = label
+            live_values.addWidget(label, index // 3, index % 3)
+        layout.addLayout(live_values)
+
+        self.aim_initial_avp_label = QtWidgets.QLabel("阶段初值：等待粗对准期间的有效数据")
+        self.aim_initial_avp_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        layout.addWidget(self.aim_initial_avp_label)
+
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal); layout.addWidget(splitter, 1)
+        left_graphics = pg.GraphicsLayoutWidget(); right_graphics = pg.GraphicsLayoutWidget()
+        splitter.addWidget(left_graphics); splitter.addWidget(right_graphics)
+        self.aim_series_plots: list[pg.PlotItem] = []
+        self.aim_series_curves: dict[str, pg.PlotDataItem] = {}
+        self.aim_series_groups: list[tuple[str, str, str]] = []
+        colors = ("#45a3ff", "#ffad42", "#5bd18b")
+
+        def add_series(graphics, row, title, y_name, unit, channels, labels):
+            plot = graphics.addPlot(row=row, col=0)
+            self._configure_plot(plot, title, y_name, unit)
+            plot.addLegend(offset=(6, 4))
+            if row == 4: plot.setLabel("bottom", "相对时间", units="s")
+            if self.aim_series_plots: plot.setXLink(self.aim_series_plots[0])
+            self.aim_series_plots.append(plot)
+            self.aim_series_groups.append(tuple(channels))
+            for channel, label, color in zip(channels, labels, colors):
+                self.aim_series_curves[channel] = plot.plot(
+                    pen=pg.mkPen(color, width=1.3), name=label)
+
+        add_series(left_graphics, 0, "NED位置", "位置", "m",
+                   ("pn", "pe", "pd"), ("N", "E", "D"))
+        add_series(left_graphics, 1, "NED速度", "速度", "m/s",
+                   ("vn", "ve", "vd"), ("Vn", "Ve", "Vd"))
+        add_series(left_graphics, 2, "姿态", "角度", "deg",
+                   ("roll", "pitch", "heading"), ("Roll", "Pitch", "Heading"))
+        add_series(left_graphics, 3, "陀螺仪零偏", "零偏", "deg/s",
+                   ("gbx", "gby", "gbz"), ("Bx", "By", "Bz"))
+        add_series(left_graphics, 4, "加速度计零偏", "零偏", "m/s²",
+                   ("abx", "aby", "abz"), ("Bx", "By", "Bz"))
+        add_series(right_graphics, 0, "位置标准差（1σ）", "标准差", "m",
+                   ("std_pn", "std_pe", "std_pd"), ("N", "E", "D"))
+        add_series(right_graphics, 1, "速度标准差（1σ）", "标准差", "m/s",
+                   ("std_vn", "std_ve", "std_vd"), ("N", "E", "D"))
+        add_series(right_graphics, 2, "姿态标准差（1σ）", "标准差", "deg",
+                   ("std_roll", "std_pitch", "std_heading"), ("Roll", "Pitch", "Heading"))
+        add_series(right_graphics, 3, "陀螺零偏标准差（1σ）", "标准差", "deg/s",
+                   ("std_gbx", "std_gby", "std_gbz"), ("X", "Y", "Z"))
+        add_series(right_graphics, 4, "加表零偏标准差（1σ）", "标准差", "m/s²",
+                   ("std_abx", "std_aby", "std_abz"), ("X", "Y", "Z"))
+        splitter.setSizes((700, 700))
+        return page
+
+    def _build_loose_navigation_tab(self) -> QtWidgets.QWidget:
+        page = QtWidgets.QWidget(); layout = QtWidgets.QVBoxLayout(page)
+        controls = QtWidgets.QHBoxLayout()
+        self.nav_start_button = QtWidgets.QPushButton("结束精对准并启动组合导航")
+        self.nav_start_button.clicked.connect(self.start_loose_navigation)
+        self.nav_start_button.setEnabled(False)
+        self.nav_stop_button = QtWidgets.QPushButton("停止组合导航")
+        self.nav_stop_button.clicked.connect(self.stop_loose_navigation)
+        self.nav_stop_button.setEnabled(False)
+        self.nav_status_label = QtWidgets.QLabel("未启动")
+        self.nav_status_label.setStyleSheet("font-weight:bold")
+        controls.addWidget(self.nav_start_button); controls.addWidget(self.nav_stop_button)
+        controls.addWidget(QtWidgets.QLabel("状态：")); controls.addWidget(self.nav_status_label)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
+        metrics = QtWidgets.QGridLayout()
+        self.nav_gnss_label = QtWidgets.QLabel("GNSS更新：--")
+        self.nav_timing_label = QtWidgets.QLabel("延迟/重放：--")
+        metrics.addWidget(self.nav_gnss_label, 0, 0)
+        metrics.addWidget(self.nav_timing_label, 0, 1)
+        self.nav_value_labels = {}
+        for index, (key, title) in enumerate((
+                ("time", "导航时刻"), ("position", "组合位置 B/L/H"),
+                ("velocity", "NED速度"), ("attitude", "FRD姿态 R/P/H"),
+                ("gyro_bias", "陀螺零偏 X/Y/Z"),
+                ("accel_bias", "加表零偏 X/Y/Z"))):
+            label = QtWidgets.QLabel(f"{title}: --")
+            label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            self.nav_value_labels[key] = label
+            metrics.addWidget(label, 1 + index // 3, index % 3)
+        layout.addLayout(metrics)
+
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical); layout.addWidget(splitter, 1)
+        self.fusion_map_widget = NavigationMapWidget(self.settings)
+        splitter.addWidget(self.fusion_map_widget)
+        plots = pg.GraphicsLayoutWidget(); splitter.addWidget(plots)
+        self.nav_velocity_plot = plots.addPlot(row=0, col=0)
+        self._configure_plot(self.nav_velocity_plot, "组合导航NED速度", "速度", "m/s")
+        self.nav_velocity_plot.addLegend(offset=(6, 4))
+        self.nav_velocity_plot.setLabel("bottom", "相对时间", units="s")
+        self.nav_attitude_plot = plots.addPlot(row=0, col=1)
+        self._configure_plot(self.nav_attitude_plot, "载体姿态（FRD相对NED）", "角度", "deg")
+        self.nav_attitude_plot.addLegend(offset=(6, 4))
+        self.nav_attitude_plot.setLabel("bottom", "相对时间", units="s")
+        colors = ("#45a3ff", "#ffad42", "#5bd18b")
+        self.nav_curves = {}
+        for key, label, color in zip(("vn", "ve", "vd"), ("Vn", "Ve", "Vd"), colors):
+            self.nav_curves[key] = self.nav_velocity_plot.plot(
+                pen=pg.mkPen(color, width=1.4), name=label)
+        for key, label, color in zip(
+                ("roll", "pitch", "heading"), ("Roll", "Pitch", "Heading"), colors):
+            self.nav_curves[key] = self.nav_attitude_plot.plot(
+                pen=pg.mkPen(color, width=1.4), name=label)
+        splitter.setSizes((520, 360))
+        return page
+
+    def configure_self_aim_config(self) -> None:
+        dialog = SelfAimConfigDialog(self.self_aim_config, self.self_aim_config_path, self)
+        if dialog.exec_() != QtWidgets.QDialog.Accepted: return
+        config = dialog.result_config
+        self.self_aim_config = config; self.self_aim_config_path = dialog.config_path
+        self.self_aim = RealtimeSelfAim(config); self.last_aim_solution = self.self_aim.solution()
+        if self.self_aim_config_path.is_file():
+            self.settings.setValue("self_aim_config", str(self.self_aim_config_path))
+        self.aim_config_label.setText(self.self_aim_config_path.name)
+        self.aim_config_label.setToolTip(str(self.self_aim_config_path))
+        self.aim_start_button.setEnabled(True); self.aim_stop_button.setEnabled(False)
+        self.aim_manual_fine_button.setEnabled(False)
+        self._update_aim_labels(self.last_aim_solution)
+        self._update_session_metadata(
+            effective_self_aim_config=asdict(self.self_aim_config),
+            self_aim_config_source=str(self.self_aim_config_path.resolve()))
+        self.log_event(
+            "自瞄", f"算法参数已从Qt界面应用；输出目标 "
+                    f"{self.self_aim_config.output_rate_hz:.2f} Hz。")
+
+    def start_self_aim(self) -> None:
+        if self.navigation_active:
+            self.log_event("组合导航", "组合导航运行中，不能重新开始对准。", "WARN")
+            return
+        self.self_aim.start(); self.last_aim_solution = self.self_aim.solution()
+        self.last_aim_output_time = -math.inf
+        for channel in self.aim_history.values(): channel.clear()
+        for curve in self.aim_series_curves.values(): curve.clear()
+        self.aim_start_button.setEnabled(False); self.aim_stop_button.setEnabled(True)
+        self.aim_load_button.setEnabled(False); self.aim_manual_fine_button.setEnabled(True)
+        self._update_session_metadata(
+            alignment_started_local=QtCore.QDateTime.currentDateTime().toString(
+                QtCore.Qt.ISODateWithMs),
+            effective_self_aim_config=asdict(self.self_aim_config))
+        self.log_event(
+            "自瞄", "已开始：等待同步IMU/GNSS数据并进行粗对准；"
+                    f"记录输出目标 {self.self_aim_config.output_rate_hz:.2f} Hz。")
+        self._update_aim_labels(self.last_aim_solution)
+
+    def start_fine_alignment(self) -> None:
+        accepted = self.self_aim.start_fine_alignment()
+        solution = self.self_aim.solution(); self._consume_aim_solution(solution)
+        if accepted:
+            self.aim_manual_fine_button.setEnabled(False)
+            self.log_event("自瞄", "已按用户操作立即进入精对准。")
+        else:
+            self.log_event("自瞄", f"不能进入精对准：{solution.last_gnss_reason}", "WARN")
+        self._update_aim_labels(solution)
+
+    def stop_self_aim(self) -> None:
+        if self.self_aim.running:
+            self.self_aim.stop(); self.last_aim_solution = self.self_aim.solution()
+            self._update_session_metadata(
+                alignment_stopped_local=QtCore.QDateTime.currentDateTime().toString(
+                    QtCore.Qt.ISODateWithMs))
+            self.log_event("自瞄", "已停止。")
+        self.aim_start_button.setEnabled(True); self.aim_stop_button.setEnabled(False)
+        self.aim_load_button.setEnabled(True); self.aim_manual_fine_button.setEnabled(False)
+        self._update_aim_labels(self.last_aim_solution)
+
+    def start_loose_navigation(self) -> None:
+        if self.serial_port is None:
+            QtWidgets.QMessageBox.warning(self, "未连接串口", "请先连接采集串口。")
+            return
+        if self.navigation_active:
+            return
+        try:
+            initial = NavigationInitialState.from_alignment(self.self_aim)
+        except ValueError as error:
+            self.log_event("组合导航", f"不能启动：{error}", "WARN")
+            QtWidgets.QMessageBox.warning(self, "不能启动组合导航", str(error))
+            return
+        if not self.navigation_worker.start_navigation(self.self_aim_config, initial):
+            self._navigation_failed("组合导航线程队列已满或已退出")
+            return
+        # The initial state is copied before alignment is stopped, so the next
+        # synchronized IMU sample continues the same timestamp without a gap.
+        self.self_aim.stop(); self.last_aim_solution = self.self_aim.solution()
+        self.navigation_active = True; self.last_navigation_solution = None
+        self.last_navigation_map_time = -math.inf
+        self.last_navigation_history_time = None
+        self.last_navigation_seen_updates = 0
+        self.last_navigation_seen_rejections = 0
+        self._flush_pending_nav_row()
+        for channel in self.nav_history.values(): channel.clear()
+        for curve in self.nav_curves.values(): curve.clear()
+        self.fusion_map_widget.clear_track()
+        self.nav_start_button.setEnabled(False); self.nav_stop_button.setEnabled(True)
+        self.aim_start_button.setEnabled(False); self.aim_stop_button.setEnabled(False)
+        self.aim_load_button.setEnabled(False); self.aim_manual_fine_button.setEnabled(False)
+        self.nav_status_label.setText(
+            f"正在启动… · 输出目标 {self.self_aim_config.output_rate_hz:.2f} Hz")
+        self._update_aim_labels(self.last_aim_solution)
+        self._update_session_metadata(
+            alignment_finished_local=QtCore.QDateTime.currentDateTime().toString(
+                QtCore.Qt.ISODateWithMs),
+            navigation_started_local=QtCore.QDateTime.currentDateTime().toString(
+                QtCore.Qt.ISODateWithMs),
+            effective_self_aim_config=asdict(self.self_aim_config))
+        self.log_event(
+            "组合导航", "已保存精对准末状态，进入NED/FRD实时松组合；"
+                        f"记录输出目标 {self.self_aim_config.output_rate_hz:.2f} Hz。")
+
+    def stop_loose_navigation(self, reason: str | bool = "用户停止") -> None:
+        # QPushButton.clicked supplies a boolean; programmatic callers supply
+        # a diagnostic string used in the event log.
+        if not isinstance(reason, str):
+            reason = "用户停止"
+        if not self.navigation_active:
+            return
+        self.navigation_active = False
+        self._flush_pending_nav_row()
+        self._update_session_metadata(
+            navigation_stopped_local=QtCore.QDateTime.currentDateTime().toString(
+                QtCore.Qt.ISODateWithMs),
+            navigation_stop_reason=reason)
+        self.navigation_worker.stop_navigation()
+        self.nav_start_button.setEnabled(False); self.nav_stop_button.setEnabled(False)
+        self.aim_start_button.setEnabled(True); self.aim_load_button.setEnabled(True)
+        self.nav_status_label.setText("已停止")
+        self.log_event("组合导航", reason)
+
+    def _navigation_failed(self, message: str) -> None:
+        self.navigation_active = False
+        self._flush_pending_nav_row()
+        self._update_session_metadata(
+            navigation_stopped_local=QtCore.QDateTime.currentDateTime().toString(
+                QtCore.Qt.ISODateWithMs),
+            navigation_stop_reason=f"算法异常停止：{message}")
+        self.navigation_worker.stop_navigation()
+        if hasattr(self, "nav_start_button"):
+            self.nav_start_button.setEnabled(False); self.nav_stop_button.setEnabled(False)
+            self.aim_start_button.setEnabled(True); self.aim_load_button.setEnabled(True)
+            self.nav_status_label.setText("异常停止")
+        self.log_event("组合导航", f"算法异常停止：{message}", "ERROR")
+
+    def _consume_navigation_solution(self, solution) -> None:
+        self.last_navigation_solution = solution
+        if solution.gnss_updates > self.last_navigation_seen_updates:
+            output_source = "GNSS_REPLAY_CORRECTED"
+        elif solution.gnss_rejections > self.last_navigation_seen_rejections:
+            output_source = "GNSS_REJECTED_INS_CONTINUED"
+        elif solution.elapsed_s <= 1e-9:
+            output_source = "INITIAL"
+        else:
+            output_source = "INS_PROPAGATION"
+        self.last_navigation_seen_updates = solution.gnss_updates
+        self.last_navigation_seen_rejections = solution.gnss_rejections
+        self.nav_status_label.setText(
+            f"{solution.status} · 输出目标 {self.self_aim_config.output_rate_hz:.2f} Hz")
+        delay = "--" if not math.isfinite(solution.gnss_delay_s) else f"{solution.gnss_delay_s:.3f}s"
+        self.nav_gnss_label.setText(
+            f"GNSS更新/拒绝：{solution.gnss_updates}/{solution.gnss_rejections} · "
+            f"{solution.last_gnss_reason}")
+        self.nav_timing_label.setText(
+            f"延迟 {delay} · 重放 {solution.replay_samples}点/{solution.replay_time_ms:.2f}ms · "
+            f"缓存 {solution.buffer_span_s:.2f}s · 输入队列 {self.navigation_worker.commands.qsize()}")
+
+        def triplet(values, precision):
+            return "/".join("--" if not math.isfinite(v) else f"{v:.{precision}f}" for v in values)
+
+        if solution.gps_time_s is None:
+            self.nav_value_labels["time"].setText("导航时刻: --")
+        else:
+            week = int(solution.gps_time_s // GPS_WEEK_SECONDS)
+            tow = solution.gps_time_s - week * GPS_WEEK_SECONDS
+            self.nav_value_labels["time"].setText(f"导航时刻: W{week} {tow:.3f}s")
+        self.nav_value_labels["position"].setText(
+            f"组合位置 B/L/H: {solution.lat_deg:.9f}° / {solution.lon_deg:.9f}° / "
+            f"{solution.height_m:.3f}m")
+        self.nav_value_labels["velocity"].setText(
+            f"NED速度: {triplet(solution.velocity_ned_m_s, 4)} m/s")
+        self.nav_value_labels["attitude"].setText(
+            f"FRD姿态 R/P/H: {triplet((solution.roll_deg, solution.pitch_deg, solution.heading_deg), 4)} °")
+        self.nav_value_labels["gyro_bias"].setText(
+            f"陀螺零偏 X/Y/Z: {triplet(solution.gyro_bias_deg_s, 6)} deg/s")
+        self.nav_value_labels["accel_bias"].setText(
+            f"加表零偏 X/Y/Z: {triplet(solution.accel_bias_m_s2, 6)} m/s²")
+        if solution.gps_time_s is None or not math.isfinite(solution.gps_time_s):
+            return
+        # A GNSS correction can follow the IMU output for exactly the same
+        # navigation epoch. Replace that point instead of drawing and saving
+        # two different states with an identical timestamp.
+        values = {
+            "time": solution.elapsed_s,
+            **dict(zip(("vn", "ve", "vd"), solution.velocity_ned_m_s)),
+            **dict(zip(("roll", "pitch", "heading"),
+                       (solution.roll_deg, solution.pitch_deg, solution.heading_deg))),
+        }
+        same_epoch = (self.last_navigation_history_time is not None and
+                      abs(solution.gps_time_s-self.last_navigation_history_time) <= 1e-6 and
+                      bool(self.nav_history["time"]))
+        for key, value in values.items():
+            if same_epoch:
+                self.nav_history[key][-1] = value
+            else:
+                self.nav_history[key].append(value)
+        self.last_navigation_history_time = solution.gps_time_s
+        if (math.isfinite(solution.lat_deg) and math.isfinite(solution.lon_deg) and
+                solution.gps_time_s-self.last_navigation_map_time >= 0.2):
+            self.fusion_map_widget.set_position(solution.lat_deg, solution.lon_deg)
+            self.last_navigation_map_time = solution.gps_time_s
+        if solution.running:
+            self._queue_navigation_row(solution, output_source)
+
+    @staticmethod
+    def _navigation_row(solution, output_source: str) -> list:
+        week = int(solution.gps_time_s // GPS_WEEK_SECONDS)
+        tow = solution.gps_time_s-week*GPS_WEEK_SECONDS
+        return [
+            solution.gps_time_s, week, tow, solution.elapsed_s, solution.status,
+            output_source,
+            solution.lat_deg, solution.lon_deg, solution.height_m,
+            *solution.position_ned_m, *solution.velocity_ned_m_s,
+            solution.roll_deg, solution.pitch_deg, solution.heading_deg,
+            *solution.gyro_bias_deg_s, *solution.accel_bias_m_s2,
+            solution.gnss_updates, solution.gnss_rejections,
+            solution.last_gnss_reason, solution.gnss_delay_s,
+            solution.replay_samples, solution.replay_time_ms,
+            solution.buffer_span_s, *solution.covariance_std]
+
+    def _queue_navigation_row(self, solution, output_source: str) -> None:
+        if self.nav_writer is None:
+            return
+        row = self._navigation_row(solution, output_source)
+        if (self.pending_nav_time is not None and
+                abs(solution.gps_time_s-self.pending_nav_time) <= 1e-6):
+            self.pending_nav_row = row
+            return
+        self._flush_pending_nav_row()
+        self.pending_nav_time = solution.gps_time_s
+        self.pending_nav_row = row
+
+    def _flush_pending_nav_row(self) -> None:
+        if self.pending_nav_row is not None and self.nav_writer is not None:
+            self.nav_writer.writerow(self.pending_nav_row)
+            self._periodic_flush()
+        self.pending_nav_row = None
+        self.pending_nav_time = None
+
     def _build_timers(self) -> None:
         self.serial_timer = QtCore.QTimer(self); self.serial_timer.setInterval(10)
         self.serial_timer.timeout.connect(self.poll_serial); self.serial_timer.start()
@@ -699,8 +1481,9 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         else: self.disconnect_serial("用户断开。")
 
     def select_all_logs(self) -> None:
-        for checkbox in self.save_checkboxes.values():
-            checkbox.setChecked(True)
+        select = not all(checkbox.isChecked() for checkbox in self.save_checkboxes.values())
+        for checkbox in self.save_checkboxes.values(): checkbox.setChecked(select)
+        self.select_all_button.setText("一键取消" if select else "一键存储")
 
     def _set_log_controls_enabled(self, enabled: bool) -> None:
         for checkbox in self.save_checkboxes.values():
@@ -719,7 +1502,23 @@ class NavigationMonitor(QtWidgets.QMainWindow):
                 continue
         raise OSError(f"无法为采集时间 {stamp} 创建唯一文件夹")
 
+    def _update_session_metadata(self, **updates) -> None:
+        """Persist the effective runtime setup without NTRIP/API secrets."""
+        if self.session_metadata_path is None:
+            return
+        self.session_metadata.update(updates)
+        try:
+            self.session_metadata_path.write_text(
+                json.dumps(self.session_metadata, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8")
+        except OSError as error:
+            self.log_event("文件", f"会话配置保存失败：{error}", "WARN")
+
     def _open_logs(self) -> bool:
+        self.session_metadata_path = None
+        self.session_metadata = {}
+        self.pending_nav_row = None
+        self.pending_nav_time = None
         self.event_save_label.setText("本机时间 · 界面最近 5000 条 · LOG 未保存")
         self.event_save_label.setToolTip("")
         selected = {name for name, checkbox in self.save_checkboxes.items()
@@ -764,6 +1563,72 @@ class NavigationMonitor(QtWidgets.QMainWindow):
                 self.rawx_writer = csv.writer(self.rawx_stream)
                 self.rawx_writer.writerow(RAWX_COLUMNS)
                 created.append(path.name)
+            if selected.intersection({"IMU", "GNSS", "RAWX"}):
+                path = directory / "sync.csv"
+                self.sync_stream = path.open("w", newline="", encoding="utf-8")
+                self.sync_writer = csv.writer(self.sync_stream)
+                self.sync_writer.writerow(SYNC_COLUMNS)
+                created.append(path.name)
+            if "AIM" in selected:
+                path = directory / "aim.csv"
+                self.aim_stream = path.open("w", newline="", encoding="utf-8")
+                self.aim_writer = csv.writer(self.aim_stream)
+                self.aim_writer.writerow([
+                    "gps_time_s", "elapsed_s", "stage", "progress", "roll_deg", "pitch_deg",
+                    "heading_deg", "heading_valid", "fine_initial_roll_deg",
+                    "fine_initial_pitch_deg", "fine_initial_heading_deg",
+                    "fine_initial_vel_n_m_s", "fine_initial_vel_e_m_s", "fine_initial_vel_d_m_s",
+                    "fine_initial_lat_deg", "fine_initial_lon_deg", "fine_initial_height_m",
+                    "fine_initial_position_samples",
+                    "lat_deg", "lon_deg", "height_m", "pos_n_m", "pos_e_m", "pos_d_m",
+                    "vel_n_m_s", "vel_e_m_s", "vel_d_m_s", "gyro_bias_x_deg_s",
+                    "gyro_bias_y_deg_s", "gyro_bias_z_deg_s", "accel_bias_x_m_s2",
+                    "accel_bias_y_m_s2", "accel_bias_z_m_s2", "gnss_updates",
+                    "gnss_rejections", "last_gnss_reason", "time_match_s",
+                    "std_att_roll_deg", "std_att_pitch_deg", "std_att_heading_deg",
+                    "std_vel_n_m_s", "std_vel_e_m_s", "std_vel_d_m_s",
+                    "std_pos_n_m", "std_pos_e_m", "std_pos_d_m",
+                    "std_gyro_bias_x_deg_s", "std_gyro_bias_y_deg_s", "std_gyro_bias_z_deg_s",
+                    "std_accel_bias_x_m_s2", "std_accel_bias_y_m_s2", "std_accel_bias_z_m_s2"])
+                created.append(path.name)
+            if "NAV" in selected:
+                path = directory / "nav.csv"
+                self.nav_stream = path.open("w", newline="", encoding="utf-8")
+                self.nav_writer = csv.writer(self.nav_stream)
+                self.nav_writer.writerow([
+                    "gps_time_s", "gps_week", "gps_tow_s", "elapsed_s", "status",
+                    "output_source",
+                    "lat_deg", "lon_deg", "height_m", "pos_n_m", "pos_e_m", "pos_d_m",
+                    "vel_n_m_s", "vel_e_m_s", "vel_d_m_s", "roll_deg", "pitch_deg",
+                    "heading_deg", "gyro_bias_x_deg_s", "gyro_bias_y_deg_s",
+                    "gyro_bias_z_deg_s", "accel_bias_x_m_s2", "accel_bias_y_m_s2",
+                    "accel_bias_z_m_s2", "gnss_updates", "gnss_rejections",
+                    "last_gnss_reason", "gnss_delay_s", "replay_samples",
+                    "replay_time_ms", "buffer_span_s", "std_att_roll_deg",
+                    "std_att_pitch_deg", "std_att_heading_deg", "std_vel_n_m_s",
+                    "std_vel_e_m_s", "std_vel_d_m_s", "std_pos_n_m", "std_pos_e_m",
+                    "std_pos_d_m", "std_gyro_bias_x_deg_s", "std_gyro_bias_y_deg_s",
+                    "std_gyro_bias_z_deg_s", "std_accel_bias_x_m_s2",
+                    "std_accel_bias_y_m_s2", "std_accel_bias_z_m_s2"])
+                created.append(path.name)
+            if selected.intersection({"AIM", "NAV"}):
+                self.session_metadata_path = directory / "session.json"
+                self.session_metadata = {
+                    "schema": "mpu6050-f9p-session-v1",
+                    "created_local": QtCore.QDateTime.currentDateTime().toString(
+                        QtCore.Qt.ISODateWithMs),
+                    "serial_protocol": "v3",
+                    "navigation_frame": "NED",
+                    "body_frame": "FRD",
+                    "selected_outputs": sorted(selected),
+                    "serial_port": self.port_combo.currentData() or "",
+                    "serial_baud": int(self.baud_combo.currentText()),
+                    "self_aim_config_source": str(self.self_aim_config_path.resolve()),
+                    "effective_self_aim_config": asdict(self.self_aim_config),
+                }
+                self._update_session_metadata()
+                if self.session_metadata_path.is_file():
+                    created.append(self.session_metadata_path.name)
             self.log_event("记录", f"数据目录：{directory}；文件：" + "、".join(created))
             if "LOG" in selected and self.event_stream is None:
                 raise OSError("LOG 初始写入失败，未开始采集")
@@ -774,10 +1639,19 @@ class NavigationMonitor(QtWidgets.QMainWindow):
             self._close_logs(); QtWidgets.QMessageBox.critical(self, "文件错误", f"无法创建数据文件：\n{error}"); return False
 
     def _close_logs(self) -> None:
-        for stream in (self.imu_stream, self.gnss_stream, self.rawx_stream):
+        self._flush_pending_nav_row()
+        self._update_session_metadata(
+            closed_local=QtCore.QDateTime.currentDateTime().toString(QtCore.Qt.ISODateWithMs))
+        for stream in (self.imu_stream, self.gnss_stream, self.rawx_stream,
+                       self.aim_stream, self.nav_stream, self.sync_stream):
             if stream is not None: stream.flush(); stream.close()
-        self.imu_stream = self.gnss_stream = self.rawx_stream = None
-        self.imu_writer = self.gnss_writer = self.rawx_writer = None; self.rows_since_flush = 0
+        self.imu_stream = self.gnss_stream = self.rawx_stream = self.aim_stream = self.nav_stream = None
+        self.sync_stream = None
+        self.imu_writer = self.gnss_writer = self.rawx_writer = self.aim_writer = self.nav_writer = None
+        self.sync_writer = None
+        self.rows_since_flush = 0
+        self.session_metadata_path = None
+        self.session_metadata = {}
         if self.event_stream is not None:
             self.log_event("记录", "本次采集文件关闭，LOG 记录结束。")
             if self.event_stream is not None:
@@ -833,9 +1707,15 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         if was_connected:
             self.log_event("串口", reason + "；正在关闭数据文件。",
                            "ERROR" if "异常" in reason else "INFO")
+        if self.self_aim.running:
+            self.stop_self_aim()
+        if self.navigation_active:
+            self.stop_loose_navigation("串口断开，组合导航停止")
         self.serial_port = None; self._close_logs(); self.port_combo.setEnabled(True); self.baud_combo.setEnabled(True)
         self._set_log_controls_enabled(True); self.pause_button.setEnabled(False); self.connect_button.setText("连接")
         self.connection_label.setText("● 未连接"); self.connection_label.setStyleSheet("color:#ff6174;font-weight:bold")
+        self.capture_label.setText("Capture: --"); self.capture_label.setStyleSheet("")
+        self._prev_sync = None; self._sync_diag = None
         self.statusBar().showMessage(reason)
 
     def _start_serial_worker(self, port):
@@ -951,6 +1831,8 @@ class NavigationMonitor(QtWidgets.QMainWindow):
             self.invalid_lines += 1; return
         if line.startswith("#RTCM,"):
             self._process_rtcm_status(line); return
+        if line.startswith("# sync,"):
+            self._process_sync(line); return
         if line.startswith("#"):
             if line.startswith("# booting"): self.log_event("设备", "收到 STM32 启动消息。")
             if line.startswith("# booting") and self.ntrip_client is not None:
@@ -977,6 +1859,66 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         except (ValueError, IndexError):
             self.invalid_lines += 1
 
+    def _process_sync(self, line: str) -> None:
+        sync = parse_sync_line(line)
+        if sync is None:
+            self.invalid_lines += 1
+            return
+        if self._prev_sync is not None:
+            deltas = {
+                "d_interrupt_overruns": u32_delta(
+                    sync["interrupt_overruns"], self._prev_sync["interrupt_overruns"]),
+                "d_cc2_overcapture": u32_delta(
+                    sync["cc2_overcapture"], self._prev_sync["cc2_overcapture"]),
+                "d_dt_gap_count": u32_delta(
+                    sync["dt_gap_count"], self._prev_sync["dt_gap_count"]),
+                "d_i2c_errors": u32_delta(
+                    sync["i2c_errors"], self._prev_sync["i2c_errors"]),
+            }
+        else:
+            deltas = {"d_interrupt_overruns": 0, "d_cc2_overcapture": 0,
+                      "d_dt_gap_count": 0, "d_i2c_errors": 0}
+        backlog = (sync["interrupt_count"] - sync["sample_count"]) & 0xFFFFFFFF
+        if self.sync_writer is not None:
+            self.sync_writer.writerow([
+                round(time.time() * 1000), sync["pps"],
+                sync["sample_count"], sync["interrupt_count"],
+                sync["interrupt_overruns"], sync["cc2_overcapture"],
+                sync["dt_gap_count"], sync["i2c_errors"],
+                deltas["d_interrupt_overruns"], deltas["d_cc2_overcapture"],
+                deltas["d_dt_gap_count"], deltas["d_i2c_errors"], backlog])
+            # sync is one row per second; flush it immediately so the file stays
+            # current even before the bulk _periodic_flush() threshold is hit.
+            if self.sync_stream is not None:
+                self.sync_stream.flush()
+        self._sync_diag = {**sync, **deltas, "backlog": backlog}
+        self._prev_sync = sync
+        self._update_capture_status(deltas, backlog)
+
+    def _update_capture_status(self, deltas: dict[str, int], backlog: int) -> None:
+        # Warning reflects only the just-elapsed #sync cycle, never the
+        # cumulative counters (those live in sync.csv for post-hoc analysis).
+        warnings = []
+        if deltas["d_interrupt_overruns"] > 0:
+            warnings.append(f"SW overrun +{deltas['d_interrupt_overruns']}")
+        if deltas["d_cc2_overcapture"] > 0:
+            warnings.append(f"HW overcapture +{deltas['d_cc2_overcapture']}")
+        if deltas["d_dt_gap_count"] > 0:
+            warnings.append(f"Timestamp gap +{deltas['d_dt_gap_count']}")
+        if deltas["d_i2c_errors"] > 0:
+            warnings.append(f"I2C error +{deltas['d_i2c_errors']}")
+        if warnings:
+            self.capture_label.setText(
+                "Capture warning: " + " · ".join(warnings) + f" · Backlog {backlog}")
+            self.capture_label.setStyleSheet("color:#ff6174;font-weight:bold")
+            self.capture_label.setToolTip(
+                "最近一个 #sync 周期新增的异常（非累计值、非 lost samples）。"
+                "backlog 只显示，不设阈值。")
+        else:
+            self.capture_label.setText(f"Capture: OK · Backlog {backlog}")
+            self.capture_label.setStyleSheet("color:#4ade80")
+            self.capture_label.setToolTip("")
+
     def _process_imu(self, values: list[int]) -> None:
         sample, week, tow_us, valid, timer_us, ax, ay, az, temp, gx, gy, gz = values
         if self.last_sample is not None:
@@ -1000,6 +1942,17 @@ class NavigationMonitor(QtWidgets.QMainWindow):
             self.imu_writer.writerow([sample, week, tow_us, valid, timer_us, elapsed,
                                       self.last_dt_ms / 1000.0, ax, ay, az, temp, gx, gy, gz, *physical])
             self._periodic_flush()
+        gps_time = week * GPS_WEEK_SECONDS + tow_us / 1e6 if valid else None
+        gyro_rad_s = np.radians(np.asarray(physical[4:7], dtype=float) / 3600.0)
+        solution = self.self_aim.update_imu(gps_time, physical[:3], gyro_rad_s,
+                                            self.last_dt_ms / 1000.0)
+        self._consume_aim_solution(solution)
+        if self.navigation_active and gps_time is not None and self.last_dt_ms > 0.0:
+            sample_data = ImuSample(
+                sample, gps_time, tuple(float(v) for v in physical[:3]),
+                tuple(float(v) for v in gyro_rad_s), self.last_dt_ms / 1000.0)
+            if not self.navigation_worker.submit_imu(sample_data):
+                self._navigation_failed("IMU输入队列已满，未继续使用可能不连续的数据")
         self._trim_buffers()
 
     def _process_gnss(self, values: list[int]) -> None:
@@ -1048,6 +2001,21 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         if (valid and fix >= 2 and gnss_fix_ok != 0 and
                 abs(lat) <= 90 and abs(lon) <= 180):
             self.map_widget.set_position(lat, lon)
+        observation = GnssObservation(
+            gps_time_s=absolute, lat_deg=lat, lon_deg=lon, height_m=height,
+            velocity_ned_m_s=np.asarray(velocities[:3], dtype=float),
+            valid=bool(valid and fix >= 3 and gnss_fix_ok), hacc_m=h_acc_m,
+            sacc_m_s=s_acc_m_s, pdop=pdop / 100.0, vacc_m=v_acc_m)
+        self.self_aim.update_gnss(observation)
+        self._consume_aim_solution(self.self_aim.solution())
+        if self.navigation_active:
+            nav_observation = GnssObservation(
+                gps_time_s=absolute, lat_deg=lat, lon_deg=lon, height_m=height,
+                velocity_ned_m_s=np.asarray(velocities[:3], dtype=float).copy(),
+                valid=bool(valid and fix >= 3 and gnss_fix_ok), hacc_m=h_acc_m,
+                sacc_m_s=s_acc_m_s, pdop=pdop / 100.0, vacc_m=v_acc_m)
+            if not self.navigation_worker.submit_gnss(nav_observation):
+                self._navigation_failed("GNSS输入队列已满，组合导航停止")
         if self.gnss_writer is not None:
             self.gnss_writer.writerow([week, tow_ms, valid,
                                        rx_timer_us, fix, num_sv, flags, flags2,
@@ -1113,7 +2081,98 @@ class NavigationMonitor(QtWidgets.QMainWindow):
             if self.imu_stream is not None: self.imu_stream.flush()
             if self.gnss_stream is not None: self.gnss_stream.flush()
             if self.rawx_stream is not None: self.rawx_stream.flush()
+            if self.aim_stream is not None: self.aim_stream.flush()
+            if self.nav_stream is not None: self.nav_stream.flush()
             self.rows_since_flush = 0
+
+    def _consume_aim_solution(self, solution) -> None:
+        previous_stage = self.last_aim_solution.stage
+        self.last_aim_solution = solution
+        stage_changed = solution.stage != previous_stage
+        if stage_changed:
+            level = "WARN" if "等待" in solution.stage else "INFO"
+            self.log_event("自瞄", f"阶段：{previous_stage} → {solution.stage}；{solution.last_gnss_reason}", level)
+            initial = solution.fine_initial_attitude_deg
+            if solution.stage == "精对准" and all(math.isfinite(v) for v in initial):
+                position = solution.fine_initial_position_geodetic
+                self.log_event("自瞄", "粗对准完成，精对准初始AVP："
+                               f"横滚 {initial[0]:.4f}°、俯仰 {initial[1]:.4f}°、"
+                               f"航向 {initial[2]:.4f}°；速度[0,0,0]m/s；"
+                               f"位置[{position[0]:.9f},{position[1]:.9f},{position[2]:.3f}]，"
+                               f"有效GNSS均值={solution.fine_initial_position_samples}点")
+        if solution.gps_time_s is None or not math.isfinite(solution.gps_time_s): return
+        interval = 1.0 / self.self_aim_config.output_rate_hz
+        if (not stage_changed and
+                solution.gps_time_s - self.last_aim_output_time + 1e-9 < interval):
+            return
+        self.last_aim_output_time = solution.gps_time_s
+        values = (
+            *solution.position_ned_m, *solution.velocity_ned_m_s,
+            solution.roll_deg, solution.pitch_deg, solution.heading_deg,
+            *solution.gyro_bias_deg_s, *solution.accel_bias_m_s2,
+            *solution.covariance_std)
+        channels = tuple(name for name in self.aim_history if name != "time")
+        self.aim_history["time"].append(solution.elapsed_s)
+        for name, value in zip(channels, values): self.aim_history[name].append(value)
+        if self.aim_writer is not None:
+            self.aim_writer.writerow([
+                solution.gps_time_s, solution.elapsed_s, solution.stage, solution.progress,
+                solution.roll_deg, solution.pitch_deg, solution.heading_deg,
+                int(solution.heading_valid), *solution.fine_initial_attitude_deg,
+                *solution.fine_initial_velocity_ned_m_s,
+                *solution.fine_initial_position_geodetic,
+                solution.fine_initial_position_samples,
+                solution.lat_deg, solution.lon_deg,
+                solution.height_m, *solution.position_ned_m,
+                *solution.velocity_ned_m_s, *solution.gyro_bias_deg_s,
+                *solution.accel_bias_m_s2, solution.gnss_updates, solution.gnss_rejections,
+                solution.last_gnss_reason, solution.time_match_s, *solution.covariance_std])
+            self._periodic_flush()
+
+    def _update_aim_labels(self, solution) -> None:
+        if not hasattr(self, "aim_stage_label"): return
+        self.aim_stage_label.setText(solution.stage)
+        if self.self_aim.running and solution.stage == "精对准":
+            self.aim_progress.setRange(0, 0)
+            self.aim_progress.setFormat("持续精对准")
+        else:
+            self.aim_progress.setRange(0, 1000)
+            self.aim_progress.setFormat("%p%")
+            self.aim_progress.setValue(round(1000 * solution.progress))
+        match = "--" if not math.isfinite(solution.time_match_s) else f"{solution.time_match_s:+.3f}s"
+        self.aim_time_label.setText(f"{solution.elapsed_s:.1f}s · 匹配 {match}")
+        self.aim_update_label.setText(
+            f"GNSS {solution.gnss_updates}/{solution.gnss_rejections} · {solution.last_gnss_reason}")
+        def triplet(values, precision=4):
+            return "/".join("--" if not math.isfinite(value) else f"{value:.{precision}f}"
+                            for value in values)
+
+        self.aim_value_labels["position"].setText(
+            f"位置 N/E/D: {triplet(solution.position_ned_m, 3)} m")
+        self.aim_value_labels["velocity"].setText(
+            f"速度 N/E/D: {triplet(solution.velocity_ned_m_s, 4)} m/s")
+        self.aim_value_labels["attitude"].setText(
+            f"姿态 R/P/H: {triplet((solution.roll_deg, solution.pitch_deg, solution.heading_deg), 4)} °")
+        self.aim_value_labels["gyro_bias"].setText(
+            f"陀螺零偏 X/Y/Z: {triplet(solution.gyro_bias_deg_s, 6)} deg/s")
+        self.aim_value_labels["accel_bias"].setText(
+            f"加表零偏 X/Y/Z: {triplet(solution.accel_bias_m_s2, 6)} m/s²")
+        initial = solution.fine_initial_attitude_deg
+        if all(math.isfinite(v) for v in initial):
+            velocity = solution.fine_initial_velocity_ned_m_s
+            position = solution.fine_initial_position_geodetic
+            self.aim_initial_avp_label.setText(
+                f"精对准初始AVP：R {initial[0]:.4f}°  P {initial[1]:.4f}°  H {initial[2]:.4f}°  |  "
+                "Vn {:.3f}  Ve {:.3f}  Vd {:.3f} m/s  |  ".format(*velocity) +
+                f"B {position[0]:.9f}°  L {position[1]:.9f}°  H {position[2]:.3f} m "
+                f"（{solution.fine_initial_position_samples}点均值）")
+        else:
+            self.aim_initial_avp_label.setText("阶段初值：等待粗对准期间的有效姿态和GNSS位置均值")
+        if self.self_aim.running:
+            self.aim_manual_fine_button.setEnabled(solution.stage == "粗对准")
+        if hasattr(self, "nav_start_button") and not self.navigation_active:
+            self.nav_start_button.setEnabled(
+                self.self_aim.running and solution.stage == "精对准")
 
     def _trim_buffers(self) -> None:
         imu_max = int(self.window_spin.value() * 130); gnss_max = int(self.window_spin.value() * 2 + 10)
@@ -1121,8 +2180,15 @@ class NavigationMonitor(QtWidgets.QMainWindow):
             while len(channel) > imu_max: channel.popleft()
         for channel in self.speed.values():
             while len(channel) > gnss_max: channel.popleft()
+        aim_max = int(self.window_spin.value() * max(self.self_aim_config.output_rate_hz, 1.0) * 1.2 + 20)
+        for channel in self.aim_history.values():
+            while len(channel) > aim_max: channel.popleft()
+        nav_max = int(self.window_spin.value() * max(self.self_aim_config.output_rate_hz, 1.0) * 1.2 + 20)
+        for channel in self.nav_history.values():
+            while len(channel) > nav_max: channel.popleft()
 
     def update_plots(self) -> None:
+        self._update_aim_labels(self.last_aim_solution)
         if self.plot_paused: return
         if len(self.imu["time"]) >= 2:
             x = np.fromiter(self.imu["time"], dtype=np.float64); x -= x[-1]
@@ -1137,6 +2203,19 @@ class NavigationMonitor(QtWidgets.QMainWindow):
             for name, curve in self.speed_curves.items():
                 curve.setData(x, np.fromiter(self.speed[name], dtype=np.float64))
             self.speed_plot.setXRange(-float(self.window_spin.value()), 0.0, padding=0.0)
+        if len(self.aim_history["time"]) >= 2:
+            x = np.fromiter(self.aim_history["time"], dtype=np.float64); x -= x[-1]
+            for name, curve in self.aim_series_curves.items():
+                curve.setData(x, np.fromiter(self.aim_history[name], dtype=np.float64))
+            self.aim_series_plots[0].setXRange(
+                -float(self.window_spin.value()), 0.0, padding=0.0)
+        if len(self.nav_history["time"]) >= 2:
+            x = np.fromiter(self.nav_history["time"], dtype=np.float64); x -= x[-1]
+            for name, curve in self.nav_curves.items():
+                curve.setData(x, np.fromiter(self.nav_history[name], dtype=np.float64))
+            window = float(self.window_spin.value())
+            self.nav_velocity_plot.setXRange(-window, 0.0, padding=0.0)
+            self.nav_attitude_plot.setXRange(-window, 0.0, padding=0.0)
 
     def update_stats(self) -> None:
         errors = (self.lost_imu, self.invalid_lines)
@@ -1173,8 +2252,9 @@ class NavigationMonitor(QtWidgets.QMainWindow):
             age = "--" if r[12] == 0xFFFFFFFF else f"{r[12] / 1000:.1f}s"
             self.rtcm_label.setText(
                 f"RTCM {ready} · {network}STM32 收/转发 {r[2]:,}/{r[3]:,} B · "
-                f"丢字节/串口错 {r[4]}/{r[5]} · F9P 收/使用 {r[7]}/{r[8]} 帧 "
-                f"CRC错 {r[9]} · 站号 {r[10]} 消息 {r[11]} · 距接收 {age} · GNSS溢出 {r[6]}")
+                f"丢字节/串口错 {r[4]}/{r[5]} · "
+                f"{self._format_f9p_counters(r)} · 站号 {r[10]} 消息 {r[11]} · "
+                f"距接收 {age} · GNSS溢出 {r[6]}")
 
     def toggle_pause(self) -> None:
         self.plot_paused = not self.plot_paused
@@ -1184,15 +2264,20 @@ class NavigationMonitor(QtWidgets.QMainWindow):
     def clear_data(self) -> None:
         self._logged_fix = None
         self._logged_errors = (0, 0)
-        for channel in (*self.imu.values(), *self.speed.values()): channel.clear()
+        for channel in (*self.imu.values(), *self.speed.values(), *self.aim_history.values(),
+                        *self.nav_history.values()): channel.clear()
+        self.last_navigation_history_time = None
+        self.last_navigation_seen_updates = 0
+        self.last_navigation_seen_rejections = 0
         self.last_sample = self.first_timer_us = self.last_timer_us = None
         self.first_gnss_time = None
         self.total_imu = self.total_gnss = self.total_rawx = self.lost_imu = self.invalid_lines = 0
         self.last_dt_ms = 0.0; self.arrivals.clear(); self.pending_satellites = []; self.satellite_epoch = None
         self.rawx_epoch = None; self.rawx_seen_header = False
-        self.map_widget.clear_track(); self.sky_plot.set_satellites([])
+        self.map_widget.clear_track(); self.fusion_map_widget.clear_track(); self.sky_plot.set_satellites([])
         for curve in (*self.accel_curves.values(), *self.gyro_curves.values(), self.temp_curve,
-                      *self.speed_curves.values()): curve.clear()
+                      *self.speed_curves.values(), *self.aim_series_curves.values(),
+                      *self.nav_curves.values()): curve.clear()
         self.update_stats()
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # noqa: N802
@@ -1201,6 +2286,12 @@ class NavigationMonitor(QtWidgets.QMainWindow):
             for worker in self.ntrip_workers: worker.stop()
             event.ignore()
             QtCore.QTimer.singleShot(100, self.close)
+        elif self.navigation_worker.isRunning():
+            self.navigation_worker.shutdown()
+            if self.navigation_worker.wait(1000):
+                event.accept()
+            else:
+                event.ignore(); QtCore.QTimer.singleShot(100, self.close)
         else: event.accept()
 
 
