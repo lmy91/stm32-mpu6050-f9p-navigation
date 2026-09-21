@@ -641,10 +641,10 @@ class MonitorBridgeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with mock.patch.object(QtWidgets.QFileDialog, "getExistingDirectory", return_value=directory):
                 self.assertTrue(monitor._open_logs())
-            worker.received.put(wire)
+            worker.put_received(wire)
             monitor.poll_serial(); monitor.disconnect_serial("test")
             session = next(pathlib.Path(directory).iterdir())
-            self.assertEqual({p.name for p in session.iterdir()}, {"imu.csv", "gnss.csv", "rawx.csv"})
+            self.assertEqual({p.name for p in session.iterdir()}, {"imu.csv", "gnss.csv", "rawx.csv", "sync.csv"})
             for name in ("imu", "gnss", "rawx"):
                 with (session / f"{name}.csv").open(newline="", encoding="utf-8-sig") as source:
                     rows = list(csv.DictReader(source))

@@ -973,14 +973,25 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         if worker is None:
             return "串口线程不可用"
         sent, pending, max_age = worker.snapshot
+        rx_cur, rx_peak, rx_chunks, _rx_peak_chunks = worker.rx_snapshot()
         detail = (f"串口已写/未确认={sent}/{pending}B，最大发送等待={max_age:.2f}s，"
-                  f"采集丢帧/无效行={self.lost_imu}/{self.invalid_lines}，{self.fix_label.text()}")
+                  f"采集丢帧/无效行={self.lost_imu}/{self.invalid_lines}，{self.fix_label.text()}，"
+                  f"Host RX={self._format_bytes(rx_cur)}, peak={self._format_bytes(rx_peak)}, "
+                  f"chunks={rx_chunks}")
         report = worker.report  # Replaced, never mutated by the serial owner.
         if report is not None:
             detail += (f"，STM32收/转发={report[2]}/{report[3]}B，"
                        f"丢字节/串口错={report[4]}/{report[5]}，"
                        f"{self._format_f9p_counters(report)}")
         return detail
+
+    @staticmethod
+    def _format_bytes(value: int) -> str:
+        if value < 1024:
+            return f"{value} B"
+        if value < 1024 * 1024:
+            return f"{value / 1024:.1f} KiB"
+        return f"{value / (1024 * 1024):.2f} MiB"
 
     @staticmethod
     def _format_f9p_counters(report) -> str:
@@ -1017,6 +1028,18 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         if reason.startswith("停止前即时现场：") or "异常" in reason:
             self.log_event("链路", f"{reason}；{self._brief_link_state()}", "ERROR")
         # 开始连接和首次有效 RTCM 已由 INFO 状态事件覆盖，不重复输出。
+
+    def _emit_link_debug(self) -> None:
+        """Emit the periodic DEBUG link state from the GUI timer.
+
+        The caster-side 周期诊断 only runs while the NTRIP loop is alive, so
+        serial-only sessions previously never saw the 10-second link state
+        (and therefore never the Host RX backlog). log_event filters this
+        unless the DEBUG level is selected; no behavior change otherwise.
+        """
+        if self.serial_worker is None:
+            return
+        self.log_event("链路", self._brief_link_state(), "DEBUG")
 
     @staticmethod
     def _configure_plot(plot: pg.PlotItem, title: str, y_name: str, units: str) -> None:
@@ -1464,6 +1487,12 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self.plot_timer.timeout.connect(self.update_plots); self.plot_timer.start()
         self.stats_timer = QtCore.QTimer(self); self.stats_timer.setInterval(500)
         self.stats_timer.timeout.connect(self.update_stats); self.stats_timer.start()
+        # Periodic DEBUG link state (includes Host RX backlog). The caster-side
+        # "周期诊断" only runs while the NTRIP loop is alive; this GUI timer
+        # keeps the 10-second state available for serial-only sessions too.
+        # log_event filters it unless the DEBUG level is selected.
+        self.link_debug_timer = QtCore.QTimer(self); self.link_debug_timer.setInterval(10000)
+        self.link_debug_timer.timeout.connect(self._emit_link_debug); self.link_debug_timer.start()
 
     def refresh_ports(self) -> None:
         selected = self.port_combo.currentData(); self.port_combo.clear()
@@ -1698,7 +1727,7 @@ class NavigationMonitor(QtWidgets.QMainWindow):
                 QtCore.QTimer.singleShot(100, lambda: self.disconnect_serial(reason))
                 return
             # Drain already-received data before closing CSV files.
-            while not worker.received.empty(): self.poll_serial()
+            while not worker.rx_empty(): self.poll_serial()
             self.serial_worker = None
             worker.deleteLater()
         elif self.serial_port is not None:

@@ -1,5 +1,4 @@
 """Single owner of the full-duplex UART; no widgets or file I/O in this worker."""
-import queue
 import threading
 import time
 from collections import deque
@@ -13,10 +12,19 @@ class SerialWorker(QtCore.QThread):
     rtcm_failed = QtCore.pyqtSignal(object, str)
     diagnostic = QtCore.pyqtSignal(str)
 
+    RX_BACKLOG_LIMIT = 2 * 1024 * 1024  # 2 MiB, byte-accurate
+
     def __init__(self, port, parent=None):
         super().__init__(parent)
         self.port = port
-        self.received = queue.Queue(maxsize=512)  # each chunk <=4096 bytes: 2 MiB
+        # Byte-accurate receive backlog. The previous Queue(maxsize=512) capped
+        # the *chunk* count, which only equaled 2 MiB when every chunk was
+        # exactly 4096 bytes. Track bytes explicitly instead.
+        self._rx_lock = threading.Lock()
+        self._rx_chunks = deque()
+        self._rx_bytes = 0
+        self._rx_peak_bytes = 0
+        self._rx_peak_chunks = 0
         self.stop_event = threading.Event()
         self.lock = threading.Lock()
         self.requested_source = None
@@ -69,10 +77,32 @@ class SerialWorker(QtCore.QThread):
 
     def take_received(self, max_bytes=262144):
         result = bytearray()
-        while len(result) < max_bytes:
-            try: result.extend(self.received.get_nowait())
-            except queue.Empty: break
+        with self._rx_lock:
+            while len(result) < max_bytes and self._rx_chunks:
+                chunk = self._rx_chunks.popleft()
+                result.extend(chunk)
+                self._rx_bytes -= len(chunk)
         return result
+
+    def rx_snapshot(self):
+        """Return (current_bytes, peak_bytes, current_chunks, peak_chunks)."""
+        with self._rx_lock:
+            return (self._rx_bytes, self._rx_peak_bytes,
+                    len(self._rx_chunks), self._rx_peak_chunks)
+
+    def rx_empty(self):
+        with self._rx_lock:
+            return not self._rx_chunks
+
+    def put_received(self, data: bytes) -> None:
+        """Inject a raw chunk (used by tests and diagnostics)."""
+        with self._rx_lock:
+            self._rx_chunks.append(data)
+            self._rx_bytes += len(data)
+            if self._rx_bytes > self._rx_peak_bytes:
+                self._rx_peak_bytes = self._rx_bytes
+            if len(self._rx_chunks) > self._rx_peak_chunks:
+                self._rx_peak_chunks = len(self._rx_chunks)
 
     def _stop_forwarding(self, message):
         source = self.source
@@ -102,9 +132,19 @@ class SerialWorker(QtCore.QThread):
         if not waiting: return
         data = self.port.read(min(waiting, 4096))
         if not data: return
-        try: self.received.put_nowait(data)
-        except queue.Full as error:
-            raise OSError("界面/记录处理停顿，接收队列已达 2 MiB；停止采集以免静默丢数据") from error
+        with self._rx_lock:
+            if self._rx_bytes + len(data) > self.RX_BACKLOG_LIMIT:
+                raise OSError(
+                    f"GUI RX backlog exceeded: current={self._rx_bytes} B "
+                    f"peak={self._rx_peak_bytes} B "
+                    f"chunks={len(self._rx_chunks)} "
+                    f"limit={self.RX_BACKLOG_LIMIT} B；停止采集以免静默丢数据")
+            self._rx_chunks.append(data)
+            self._rx_bytes += len(data)
+            if self._rx_bytes > self._rx_peak_bytes:
+                self._rx_peak_bytes = self._rx_bytes
+            if len(self._rx_chunks) > self._rx_peak_chunks:
+                self._rx_peak_chunks = len(self._rx_chunks)
         self.line_buffer.extend(data)
         while True:
             end = self.line_buffer.find(b"\n")
