@@ -19,7 +19,23 @@
 - Allan方差工具直接读取采集器生成的当前21列IMU v3文件
 - Qt 直连 NTRIP v2，经同一个 COM7 将 RTCM3 下发到 STM32，再由 PA2 转发给 F9P；显示各级接收/转发计数及 RTK 浮点/固定状态
 
+## Raspberry Pi 生产部署
+
+Raspberry Pi 5 的正式采集与部署请使用独立仓库：
+
+https://github.com/lmy91/pi5-mpu6050-f9p-logger
+
+该仓库是本项目的 Raspberry Pi 部署子项目，负责 Web Dashboard、Wi-Fi 热点、
+systemd、NTRIP、原始 UBX 保存、GNSS 校时和设备端采集运维。
+
+本仓库中的 `raspberry_pi5/` 当前仅作为开发与历史参考保留，不再作为正式生产部署入口。
+
+STM32 固件和串口协议仍以本仓库为上游；稳定版本冻结后再同步到 Pi 部署仓库。
+
 ## 树莓派服务切换：ICM ↔ MPU
+
+> 本节仅用于开发/测试时在同一块树莓派上切换两套实验服务；正式生产部署请使用上文的
+> [`pi5-mpu6050-f9p-logger`](https://github.com/lmy91/pi5-mpu6050-f9p-logger)。
 
 同一块树莓派上，ICM 项目（`pi5-icm42688p-f9p-logger`）与本项目（MPU）使用
 **完全相同的 systemd 服务名**（`gnss-imu-logger.service`、
