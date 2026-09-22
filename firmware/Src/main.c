@@ -7,6 +7,7 @@
  * PPS and IMU DATA_RDY in the same 1 MHz hardware time domain.
  */
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define REG32(a) (*(volatile uint32_t *)(a))
@@ -136,6 +137,13 @@ static volatile uint32_t g_pps_time_valid;
 static volatile uint16_t g_next_gps_week;
 static volatile uint32_t g_next_gps_tow_ms;
 static volatile uint32_t g_next_gps_time_valid;
+/* Holdover anchor: the last valid GNSS-synchronized time (PPS + TIM-TP). Kept
+ * so IMU GPS timestamps keep advancing smoothly after GNSS lock loss, instead
+ * of dropping to week/tow = 0. time_valid stays 0 while extrapolating. */
+static volatile uint64_t g_holdover_capture_us;
+static volatile uint16_t g_holdover_week;
+static volatile uint32_t g_holdover_tow_ms;
+static volatile uint8_t g_holdover_valid;
 static volatile uint8_t g_gnss_rx[GNSS_RX_SIZE];
 static volatile uint32_t g_gnss_rx_time_low[GNSS_RX_SIZE];
 static volatile uint16_t g_gnss_rx_head;
@@ -1102,44 +1110,75 @@ static void print_header(void)
 static uint32_t gps_time_from_local(uint64_t local_us, uint16_t *week,
                                     uint64_t *tow_us)
 {
-    uint64_t pps_us;
-    uint32_t pps_tow_ms;
-    uint16_t pps_week;
+    uint64_t pps_us, holdover_us;
+    uint32_t pps_tow_ms, holdover_tow_ms;
+    uint16_t pps_week, holdover_week;
     uint32_t valid;
+    uint8_t holdover_valid;
 
     __asm volatile ("cpsid i" ::: "memory");
     pps_us = g_pps_capture_us;
     pps_tow_ms = g_pps_gps_tow_ms;
     pps_week = g_pps_gps_week;
     valid = g_pps_time_valid;
+    holdover_us = g_holdover_capture_us;
+    holdover_tow_ms = g_holdover_tow_ms;
+    holdover_week = g_holdover_week;
+    holdover_valid = g_holdover_valid;
     __asm volatile ("cpsie i" ::: "memory");
 
-    if (!valid) {
-        *week = 0u;
-        *tow_us = 0u;
+    if (valid) {
+        /* Refresh the holdover anchor from every valid PPS so a later loss of
+         * lock extrapolates from the freshest synchronized time. */
+        __asm volatile ("cpsid i" ::: "memory");
+        g_holdover_capture_us = pps_us;
+        g_holdover_week = pps_week;
+        g_holdover_tow_ms = pps_tow_ms;
+        g_holdover_valid = 1u;
+        __asm volatile ("cpsie i" ::: "memory");
+
+        uint64_t gps_us = (uint64_t)pps_tow_ms * 1000u;
+        if (local_us >= pps_us) {
+            gps_us += local_us - pps_us;
+            while (gps_us >= GPS_WEEK_US) {
+                gps_us -= GPS_WEEK_US;
+                ++pps_week;
+            }
+        } else {
+            uint64_t before_pps = pps_us - local_us;
+            while (before_pps > gps_us) {
+                before_pps -= gps_us + 1u;
+                gps_us = GPS_WEEK_US - 1u;
+                --pps_week;
+            }
+            gps_us -= before_pps;
+        }
+        *week = pps_week;
+        *tow_us = gps_us;
+        return 1u;
+    }
+
+    if (holdover_valid) {
+        /* HOLDOVER: GNSS lock lost. Extrapolate the last valid anchor on the
+         * TIM2 grid so week/tow stay continuous; time_valid returns 0. */
+        uint64_t gps_us = (uint64_t)holdover_tow_ms * 1000u;
+        uint16_t wk = holdover_week;
+        if (local_us >= holdover_us) {
+            gps_us += local_us - holdover_us;
+            while (gps_us >= GPS_WEEK_US) {
+                gps_us -= GPS_WEEK_US;
+                ++wk;
+            }
+        }
+        *week = wk;
+        *tow_us = gps_us;
         return 0u;
     }
 
-    uint64_t gps_us = (uint64_t)pps_tow_ms * 1000u;
-    if (local_us >= pps_us) {
-        gps_us += local_us - pps_us;
-        while (gps_us >= GPS_WEEK_US) {
-            gps_us -= GPS_WEEK_US;
-            ++pps_week;
-        }
-    } else {
-        uint64_t before_pps = pps_us - local_us;
-        while (before_pps > gps_us) {
-            before_pps -= gps_us + 1u;
-            gps_us = GPS_WEEK_US - 1u;
-            --pps_week;
-        }
-        gps_us -= before_pps;
-    }
-
-    *week = pps_week;
-    *tow_us = gps_us;
-    return 1u;
+    /* UNINITIALIZED: never received a valid GNSS time. */
+    *week = 0u;
+    *tow_us = 0u;
+    return 0u;
 }
 
 static void print_sample(uint32_t sample, uint64_t now,
@@ -1252,14 +1291,45 @@ static void print_rawx_end(void)
     uart_puts("RAWX_END,"); uart_u32(g_rawx_count); uart_puts("\r\n");
 }
 
+static uint32_t current_time_state(uint64_t capture_us, uint64_t *holdover_age_ms)
+{
+    uint32_t valid;
+    uint8_t holdover_valid;
+    uint64_t holdover_us;
+
+    __asm volatile ("cpsid i" ::: "memory");
+    valid = g_pps_time_valid;
+    holdover_valid = g_holdover_valid;
+    holdover_us = g_holdover_capture_us;
+    __asm volatile ("cpsie i" ::: "memory");
+
+    if (valid) {
+        if (holdover_age_ms != NULL) *holdover_age_ms = 0u;
+        return 1u;  /* LOCKED */
+    }
+    if (holdover_valid) {
+        if (holdover_age_ms != NULL) {
+            *holdover_age_ms = (capture_us >= holdover_us)
+                ? (capture_us - holdover_us) / 1000u : 0u;
+        }
+        return 2u;  /* HOLDOVER */
+    }
+    if (holdover_age_ms != NULL) *holdover_age_ms = 0u;
+    return 0u;  /* UNINITIALIZED */
+}
+
 static void print_sync(uint32_t pps_count, uint64_t capture_us,
                        uint16_t week, uint32_t tow_ms, uint32_t time_valid)
 {
+    uint64_t holdover_age_ms;
+    uint32_t time_state = current_time_state(capture_us, &holdover_age_ms);
     uart_puts("# sync,pps="); uart_u32(pps_count);
     uart_puts(",timer_us="); uart_u64(capture_us);
     uart_puts(",gps_week="); uart_u32(week);
     uart_puts(",gps_tow_ms="); uart_u32(tow_ms);
     uart_puts(",time_valid="); uart_u32(time_valid);
+    uart_puts(",time_state="); uart_u32(time_state);
+    uart_puts(",holdover_age_ms="); uart_u64(holdover_age_ms);
     uart_puts(",pvt_itow_ms="); uart_u32(g_debug_nav_itow_ms);
     uart_puts(",fix="); uart_u32(g_debug_nav_fix_type);
     uart_puts(",num_sv="); uart_u32(g_debug_nav_num_sv);
