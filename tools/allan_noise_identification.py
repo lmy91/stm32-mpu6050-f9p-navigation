@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime
 import math
 import pathlib
 from dataclasses import dataclass
@@ -712,9 +713,6 @@ def main() -> None:
     if not args.csv.exists():
         raise SystemExit(f"CSV not found: {args.csv}")
 
-    output = args.output or DATA_DIR / "allan_results" / f"{args.csv.stem}_noise"
-    output.mkdir(parents=True, exist_ok=True)
-
     print(f"Loading {args.csv.resolve()} ...", flush=True)
     data_all = load_decoded_csv(args.csv)
     skip_samples = int(round(args.skip_minutes * 60.0 * args.rate))
@@ -733,6 +731,18 @@ def main() -> None:
     dt_summary = ", ".join(
         f"{int(value)} ms:{int(count):,}" for value, count in zip(dt_values, dt_counts)
     )
+
+    # Name the output directory from the actual capture duration and recording
+    # date (derived from the CSV's modification time): mpu_<duration>_<yyyymmdd>.
+    if args.output is not None:
+        output = args.output
+    else:
+        hours = elapsed / 3600.0
+        duration_text = f"{hours:.1f}".rstrip("0").rstrip(".") + "h"
+        date_text = datetime.datetime.fromtimestamp(
+            args.csv.stat().st_mtime).strftime("%Y%m%d")
+        output = DATA_DIR / "allan_results" / f"mpu_{duration_text}_{date_text}"
+    output.mkdir(parents=True, exist_ok=True)
 
     print(f"Frames: {data_all.size:,}; analyzing: {data.size:,}", flush=True)
     print(f"Duration: {elapsed / 3600.0:.3f} h; empirical rate: {empirical_rate:.6f} Hz", flush=True)
