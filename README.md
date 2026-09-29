@@ -2,6 +2,10 @@
 
 [中文](README.md) | [English](README_EN.md)
 
+最新离线标定流程：原始 21h 数据逐轴多阶选阶与拟合 → 24 位置逐样本温补后标定 → 三方案 Allan 对比。具体命令、参数约定与验证结果见 [温补标定 SOP](docs/温补标定SOP.md) 和 [IMU 温度补偿使用说明](docs/IMU温度补偿使用说明.md)。当前离线参数尚未自动接入在线组合导航。
+
+电动车采集会话 `data/decoded/20260923104556_电动车2/` 作为完整示例数据保留，包含原始 IMU/GNSS/RAWX/UBX/RTKLIB 文件、组合导航实验脚本，以及静止区间三方案纯惯导对比结果。示例边界和复现入口见该目录的 `README.md`。
+
 这是一个面向低成本 GNSS/INS 的实时实验平台：STM32F103 在同一个硬件定时器时钟域内捕获 MPU6050 DATA_RDY 与 ZED-F9P 1PPS，把每个 IMU 样本标记为 GPS 周/周内微秒，同时以 1 Hz 输出 GNSS 导航解、天空图及 RAWX 原始观测。Qt 上位机完成实时显示、地图轨迹、分文件记录，并提供 PC 端实时自瞄/松组合原型。
 
 当前版本已加入使用同步 IMU 与 F9P 位置/速度的局部 NED 松组合自瞄原型；紧组合伪距/多普勒滤波尚未实现。该算法用于联调研究，正式使用前仍需完成数据质量、安装角、杆臂、延迟和参考轨迹验证。
@@ -27,6 +31,11 @@ https://github.com/lmy91/pi5-mpu6050-f9p-logger
 
 该仓库是本项目的 Raspberry Pi 部署子项目，负责 Web Dashboard、Wi-Fi 热点、
 systemd、NTRIP、原始 UBX 保存、GNSS 校时和设备端采集运维。
+
+以后从 GitHub 覆盖更新树莓派生产版本时，严格按
+[`docs/RASPBERRY_PI_GIT_UPDATE_SOP.md`](docs/RASPBERRY_PI_GIT_UPDATE_SOP.md)
+执行。该 SOP 包含停止保存、版本核对、覆盖更新、测试、服务重装、缓存清理、
+验收和失败回滚步骤。
 
 本仓库中的 `raspberry_pi5/` 当前仅作为开发与历史参考保留，不再作为正式生产部署入口。
 

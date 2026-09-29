@@ -6,6 +6,10 @@
 
 ## 工具
 
+多阶温补与标定的**唯一正式流程**见 [温补标定 SOP](../docs/温补标定SOP.md)：① `fit_temp_order_selection.m` → ① `fit_temp_bias_raw.m` → ② `calib24_static_numbered_tempcomp.m` → ③ `allan_compare_tc_configs.py`。步骤①②可用 `run_tempcal_sop.m` 一键跑通。理论背景见 [IMU温度补偿使用说明](../docs/IMU温度补偿使用说明.md)。
+
+旧的 `allan_compare_before_after.py`、`fit_temp_bias_poly3.m` 及其标定域产物已从正式工具树删除。当前系数文件为 `temp_coeffs_raw.{mat,csv}`，阶数由拟合脚本的 `cfg.axisOrder` 决定；未拟合轴整行为 0。
+
 | 文件 | 用途 | 默认输出 |
 | --- | --- | --- |
 | `capture_serial.py` | 无界面采集 | 会话文件夹中的 IMU、GNSS导航、RAWX CSV |
@@ -13,6 +17,8 @@
 | `check_rtcm_bridge.py` | 调用同一 Qt 代码短时检查 RTCM 链路 | 控制台统计，不生成文件 |
 | `inspect_f9p.py` | 在 F9P 原生 USB 口只读查询 UBX 状态 | 控制台摘要，`--details` 显示逐信号状态 |
 | `allan_noise_identification.py` | 直接读取标准 IMU CSV，辨识 Allan 随机误差 | `data/allan_results/` |
+| `allan_compare_tc_configs.py` | 温补/标定三方案 Allan 对比（raw / raw+TC / raw+TC+calib） | `data/decoded/<session>/allan_compare_tc_configs/` |
+| `run_tempcal_sop.m` | 一键跑通 SOP 步骤①（选阶+拟合系数）与步骤②（温补+24 位置标定） | `data/calib24/` 下全部温补标定产物 |
 | `check_sync.py` | 核对 sync.csv 诊断文件完整性 | 控制台统计，不生成文件 |
 
 ## 安装

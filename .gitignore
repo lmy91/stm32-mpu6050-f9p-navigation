@@ -22,6 +22,7 @@ mx.scratch/
 # Large recordings and generated analysis products
 /data/decoded/*
 !/data/decoded/.gitkeep
+/data/calib24/[0-9][0-9].csv
 /data/allan_results/*
 !/data/allan_results/.gitkeep
 /host/imu_realtime_*.csv
@@ -43,6 +44,8 @@ Thumbs.db
 # Personal working documents (not part of the open-source project)
 /参数.doc
 /参数.docx
+/fusion/self_aim_config copy.json
+*.bak_*
 
 # WorkBuddy project data (memory, temp scripts) — never commit
 .workbuddy/
