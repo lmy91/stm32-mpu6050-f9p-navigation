@@ -444,8 +444,10 @@ disp(summaryTable);
 %% ============================== PLOTS ================================
 % IEEE 期刊作图规范：
 %   - 白底、无网格、四边全框、刻度朝内、Times New Roman
-%   - 单栏宽 3.5 in、字号 8 pt、导出 600 dpi
-%   - 三条曲线"颜色 + 线型"双重区分，保证黑白打印仍可辨识
+%   - 单栏宽 3.5 in、字号 8 pt、PNG 600 dpi
+%   - 三条曲线用色盲友好颜色 + 不同线型双重区分，黑白打印仍可辨识
+%   - 静止真值为共同初始状态：速度变化、位置变化和姿态变化均作为误差
+%   - 每个量的三轴误差与三维模值分开成图
 
 if ~isempty(cfg.figDir) && ~exist(cfg.figDir,'dir')
     mkdir(cfg.figDir);
@@ -453,168 +455,71 @@ end
 
 figFiles = {};   % 记录已保存的图片，最后统一打印
 
-legendLabels = {'raw','raw + temp comp','raw + temp comp + 24-pos calib'};
+legendLabels = {'Raw','TC','TC + calib.'};
 
 % IEEE 曲线样式：颜色 + 线型双重区分
-ieeeLW = 1.0;
-ieeeC  = [0.00 0.00 0.00;    % 1) raw                        黑   实线
-          0.00 0.45 0.74;    % 2) + temp comp                蓝   虚线
-          0.85 0.33 0.10];   % 3) + temp comp + 24-pos calib 橙红 点划线
+ieeeLW = 1.15;
+ieeeC  = [0   0   0;          % 1) raw                        黑   实线
+          0 114 178;          % 2) + temp comp                蓝   虚线
+          213 94 0] / 255;    % 3) + temp comp + 24-pos calib 朱红 点划线
 ieeeLS = {'-','--','-.'};
 
-labels = {'E','N','U'};
+tPlot = R3.t-R3.t(1);
+seriesVelocity = {R1.dv, R2.dv, R3.dv};
+seriesPosition = {R1.dpENU, R2.dpENU, R3.dpENU};
+seriesAttitude = {R1.datt_deg, R2.datt_deg, R3.datt_deg};
 
-% 1. Velocity change from common initial state
-fig1 = figure('Name','Pure INS static velocity-change comparison');
-axv = gobjects(3,1);
+% 1-2. Velocity error: three axes + separate 3-D norm
+fig1 = plot_three_axis_error(tPlot, seriesVelocity, ...
+    {'East','North','Up'}, ...
+    {'e_{v,E} / (m s^{-1})','e_{v,N} / (m s^{-1})','e_{v,U} / (m s^{-1})'}, ...
+    legendLabels, ieeeC, ieeeLS, ieeeLW, 'Static velocity error');
+figFiles{end+1} = save_fig(fig1, cfg.figDir, ...
+    'fig_static_01_velocity_error_axes', 5.2, 3.5, 8, 600);
 
-for i = 1:3
-    axv(i) = subplot(3,1,i);
+fig2 = plot_error_norm(tPlot, seriesVelocity, ...
+    '|e_v|_2 / (m s^{-1})', 'Static velocity-error norm', ...
+    legendLabels, ieeeC, ieeeLS, ieeeLW);
+figFiles{end+1} = save_fig(fig2, cfg.figDir, ...
+    'fig_static_02_velocity_error_norm', 2.65, 3.5, 8, 600);
 
-    plot(R1.t-R1.t(1),R1.dv(:,i),'Color',ieeeC(1,:),'LineStyle',ieeeLS{1},'LineWidth',ieeeLW);
-    hold on;
-    plot(R2.t-R2.t(1),R2.dv(:,i),'Color',ieeeC(2,:),'LineStyle',ieeeLS{2},'LineWidth',ieeeLW);
-    plot(R3.t-R3.t(1),R3.dv(:,i),'Color',ieeeC(3,:),'LineStyle',ieeeLS{3},'LineWidth',ieeeLW);
+% 3-4. Position error: three axes + separate 3-D norm
+fig3 = plot_three_axis_error(tPlot, seriesPosition, ...
+    {'East','North','Up'}, ...
+    {'e_{p,E} / m','e_{p,N} / m','e_{p,U} / m'}, ...
+    legendLabels, ieeeC, ieeeLS, ieeeLW, 'Static position error');
+figFiles{end+1} = save_fig(fig3, cfg.figDir, ...
+    'fig_static_03_position_error_axes', 5.2, 3.5, 8, 600);
 
-    ylabel(sprintf('\\Delta V_%s / m/s',labels{i}));
+fig4 = plot_error_norm(tPlot, seriesPosition, ...
+    '|e_p|_2 / m', 'Static position-error norm', ...
+    legendLabels, ieeeC, ieeeLS, ieeeLW);
+figFiles{end+1} = save_fig(fig4, cfg.figDir, ...
+    'fig_static_04_position_error_norm', 2.65, 3.5, 8, 600);
 
-    if i == 1
-        title('Velocity change from common v_0');
-    end
+% 5-6. Attitude error: three axes + separate 3-D norm
+fig5 = plot_three_axis_error(tPlot, seriesAttitude, ...
+    {'Pitch','Roll','Yaw'}, ...
+    {'e_{pitch} / deg','e_{roll} / deg','e_{yaw} / deg'}, ...
+    legendLabels, ieeeC, ieeeLS, ieeeLW, 'Static attitude error');
+figFiles{end+1} = save_fig(fig5, cfg.figDir, ...
+    'fig_static_05_attitude_error_axes', 5.2, 3.5, 8, 600);
 
-    if i == 3
-        xlabel('Elapsed time / s');
-    end
-end
-linkaxes(axv,'x');
-legend(axv(1),legendLabels,'Location','northwest','FontSize',8);
+fig6 = plot_error_norm(tPlot, seriesAttitude, ...
+    '|e_{att}|_2 / deg', 'Static attitude-error norm', ...
+    legendLabels, ieeeC, ieeeLS, ieeeLW);
+figFiles{end+1} = save_fig(fig6, cfg.figDir, ...
+    'fig_static_06_attitude_error_norm', 2.65, 3.5, 8, 600);
 
-figFiles{end+1} = save_fig(fig1, cfg.figDir, 'fig_static_01_velocity_change');
-
-% 2. 3D velocity-change norm
-fig2 = figure('Name','Pure INS velocity drift norm');
-
-plot(R1.t-R1.t(1),vecnorm(R1.dv,2,2),'Color',ieeeC(1,:),'LineStyle',ieeeLS{1},'LineWidth',ieeeLW);
-hold on;
-plot(R2.t-R2.t(1),vecnorm(R2.dv,2,2),'Color',ieeeC(2,:),'LineStyle',ieeeLS{2},'LineWidth',ieeeLW);
-plot(R3.t-R3.t(1),vecnorm(R3.dv,2,2),'Color',ieeeC(3,:),'LineStyle',ieeeLS{3},'LineWidth',ieeeLW);
-
-xlabel('Elapsed time / s');
-ylabel('||v - v_0|| / m/s');
-title('Velocity-drift norm');
-legend(legendLabels,'Location','best');
-
-figFiles{end+1} = save_fig(fig2, cfg.figDir, 'fig_static_02_velocity_drift_norm');
-
-% 3. Position displacement
-fig3 = figure('Name','Pure INS static position displacement');
-axp = gobjects(3,1);
-
-for i = 1:3
-    axp(i) = subplot(3,1,i);
-
-    plot(R1.t-R1.t(1),R1.dpENU(:,i),'Color',ieeeC(1,:),'LineStyle',ieeeLS{1},'LineWidth',ieeeLW);
-    hold on;
-    plot(R2.t-R2.t(1),R2.dpENU(:,i),'Color',ieeeC(2,:),'LineStyle',ieeeLS{2},'LineWidth',ieeeLW);
-    plot(R3.t-R3.t(1),R3.dpENU(:,i),'Color',ieeeC(3,:),'LineStyle',ieeeLS{3},'LineWidth',ieeeLW);
-
-    ylabel(sprintf('\\Delta P_%s / m',labels{i}));
-
-    if i == 1
-        title('Displacement from common p_0');
-    end
-
-    if i == 3
-        xlabel('Elapsed time / s');
+% 只保留本次定义的六张静态图；动态图不受影响。
+expectedStatic = string(figFiles(:));
+oldStatic = dir(fullfile(cfg.figDir, 'fig_static_*.png'));
+for i = 1:numel(oldStatic)
+    oldPath = string(fullfile(oldStatic(i).folder, oldStatic(i).name));
+    if ~any(oldPath == expectedStatic)
+        delete(oldPath);
     end
 end
-linkaxes(axp,'x');
-legend(axp(1),legendLabels,'Location','northwest','FontSize',8);
-
-figFiles{end+1} = save_fig(fig3, cfg.figDir, 'fig_static_03_position_displacement');
-
-% 4. Attitude drift from common initial attitude
-fig4 = figure('Name','Pure INS attitude drift');
-axa = gobjects(3,1);
-
-attLabels = {'Pitch','Roll','Yaw'};
-
-for i = 1:3
-    axa(i) = subplot(3,1,i);
-
-    plot(R1.t-R1.t(1),R1.datt_deg(:,i),'Color',ieeeC(1,:),'LineStyle',ieeeLS{1},'LineWidth',ieeeLW);
-    hold on;
-    plot(R2.t-R2.t(1),R2.datt_deg(:,i),'Color',ieeeC(2,:),'LineStyle',ieeeLS{2},'LineWidth',ieeeLW);
-    plot(R3.t-R3.t(1),R3.datt_deg(:,i),'Color',ieeeC(3,:),'LineStyle',ieeeLS{3},'LineWidth',ieeeLW);
-
-    ylabel(sprintf('\\Delta %s / deg',attLabels{i}));
-
-    if i == 1
-        title('Attitude change from common att_0');
-    end
-
-    if i == 3
-        xlabel('Elapsed time / s');
-    end
-end
-linkaxes(axa,'x');
-legend(axa(1),legendLabels,'Location','southwest','FontSize',8);
-
-figFiles{end+1} = save_fig(fig4, cfg.figDir, 'fig_static_04_attitude_drift');
-
-% 5. Direct velocity difference relative to raw
-fig5 = figure('Name','Pure INS direct velocity difference');
-axd5 = gobjects(3,1);
-
-for i = 1:3
-    axd5(i) = subplot(3,1,i);
-
-    plot(t-t(1),velDiff_21(:,i),'Color',ieeeC(2,:),'LineStyle',ieeeLS{2},'LineWidth',ieeeLW);
-    hold on;
-    plot(t-t(1),velDiff_31(:,i),'Color',ieeeC(3,:),'LineStyle',ieeeLS{3},'LineWidth',ieeeLW);
-
-    ylabel(sprintf('\\Delta V_%s / m/s',labels{i}));
-
-    if i == 1
-        title('Velocity effect of compensation (relative to raw)');
-    end
-
-    if i == 3
-        xlabel('Elapsed time / s');
-    end
-end
-linkaxes(axd5,'x');
-legend(axd5(1),{'+temp comp','+temp comp + calib'}, ...
-    'Location','northwest','FontSize',8);
-
-figFiles{end+1} = save_fig(fig5, cfg.figDir, 'fig_static_05_velocity_diff_vs_raw');
-
-% 6. Direct position difference relative to raw
-fig6 = figure('Name','Pure INS direct position difference');
-axd6 = gobjects(3,1);
-
-for i = 1:3
-    axd6(i) = subplot(3,1,i);
-
-    plot(t-t(1),posDiffENU_21(:,i),'Color',ieeeC(2,:),'LineStyle',ieeeLS{2},'LineWidth',ieeeLW);
-    hold on;
-    plot(t-t(1),posDiffENU_31(:,i),'Color',ieeeC(3,:),'LineStyle',ieeeLS{3},'LineWidth',ieeeLW);
-
-    ylabel(sprintf('\\Delta P_%s / m',labels{i}));
-
-    if i == 1
-        title('Position difference relative to raw');
-    end
-
-    if i == 3
-        xlabel('Elapsed time / s');
-    end
-end
-linkaxes(axd6,'x');
-legend(axd6(1),{'+temp comp','+temp comp + calib'}, ...
-    'Location','northwest','FontSize',8);
-
-figFiles{end+1} = save_fig(fig6, cfg.figDir, 'fig_static_06_position_diff_vs_raw');
 
 %% =============================== SAVE ================================
 
@@ -646,6 +551,66 @@ fprintf('\nFinished.\n');
 %%                           LOCAL FUNCTIONS
 %% =====================================================================
 
+function fh = plot_three_axis_error(tSec, series, axisNames, yLabels, ...
+    legendLabels, colors, lineStyles, lineWidth, figName)
+% 三轴误差纵向排列；图例占独立布局行，不遮挡曲线。
+    fh = figure('Name', figName);
+    tl = tiledlayout(fh, 3, 1, 'TileSpacing','compact', 'Padding','compact');
+    ax = gobjects(3,1);
+    lineHandles = gobjects(3,1);
+
+    for i = 1:3
+        ax(i) = nexttile(tl);
+        hold(ax(i),'on');
+        yline(ax(i), 0, ':', 'Color',[0.65 0.65 0.65], ...
+            'LineWidth',0.55, 'HandleVisibility','off');
+        for k = 1:3
+            h = plot(ax(i), tSec, series{k}(:,i), ...
+                'Color',colors(k,:), 'LineStyle',lineStyles{k}, ...
+                'LineWidth',lineWidth);
+            if i == 1
+                lineHandles(k) = h;
+            end
+        end
+        title(ax(i), sprintf('(%c) %s-axis error', char('a'+i-1), axisNames{i}), ...
+            'FontWeight','normal');
+        ylabel(ax(i), yLabels{i}, 'Interpreter','tex');
+        xlim(ax(i), [tSec(1) tSec(end)]);
+        if i < 3
+            ax(i).XTickLabel = [];
+        else
+            xlabel(ax(i), 'Elapsed time / s');
+        end
+    end
+    linkaxes(ax,'x');
+    lg = legend(ax(1), lineHandles, legendLabels, ...
+        'Orientation','horizontal', 'NumColumns',3);
+    lg.Layout.Tile = 'north';
+end
+
+
+function fh = plot_error_norm(tSec, series, yLabelText, titleText, ...
+    legendLabels, colors, lineStyles, lineWidth)
+% 三维欧氏模值单独成图。
+    fh = figure('Name', titleText);
+    ax = axes(fh);
+    hold(ax,'on');
+    yline(ax, 0, ':', 'Color',[0.65 0.65 0.65], ...
+        'LineWidth',0.55, 'HandleVisibility','off');
+    lineHandles = gobjects(3,1);
+    for k = 1:3
+        lineHandles(k) = plot(ax, tSec, vecnorm(series{k},2,2), ...
+            'Color',colors(k,:), 'LineStyle',lineStyles{k}, ...
+            'LineWidth',lineWidth);
+    end
+    xlim(ax, [tSec(1) tSec(end)]);
+    xlabel(ax, 'Elapsed time / s');
+    ylabel(ax, yLabelText, 'Interpreter','tex');
+    title(ax, titleText, 'FontWeight','normal');
+    legend(ax, lineHandles, legendLabels, 'Location','best');
+end
+
+
 function fp = save_fig(fh, figDir, baseName, heightIn, widthIn, fontSize, dpi)
 % 按 IEEE 期刊规范美化并保存 figure（PNG）。
 %   heightIn : 图高 [inch]；省略时按子图数量自动估计
@@ -663,11 +628,9 @@ function fp = save_fig(fh, figDir, baseName, heightIn, widthIn, fontSize, dpi)
     apply_ieee_style(fh, widthIn, heightIn, fontSize);
 
     fp = fullfile(figDir, [baseName '.png']);
-    try
-        exportgraphics(fh, fp, 'Resolution', dpi);
-    catch
-        print(fh, fp, '-dpng', sprintf('-r%d', dpi));
-    end
+    % print 严格遵循 PaperSize/PaperPosition：3.5 in × 600 dpi = 2100 px，
+    % 避免 exportgraphics 自动裁边后破坏 IEEE 单栏物理尺寸。
+    print(fh, fp, '-dpng', sprintf('-r%d', dpi), '-painters');
 end
 
 
@@ -676,10 +639,12 @@ function apply_ieee_style(fh, widthIn, heightIn, fontSize)
 %   白底 / Times New Roman / 刻度朝内 / 四边全框 / 无网格 / 细轴线 / 图例无边框
     set(fh, 'Color','w', ...
         'Units','inches', ...
-        'Position',[1 1 widthIn*1.4 heightIn*1.4], ...   % 屏幕显示放大，便于查看
+        'Position',[1 1 widthIn heightIn], ...
         'PaperUnits','inches', ...
         'PaperPosition',[0 0 widthIn heightIn], ...
-        'PaperSize',[widthIn heightIn]);
+        'PaperSize',[widthIn heightIn], ...
+        'PaperPositionMode','manual', ...
+        'InvertHardcopy','off');
 
     ax = findall(fh,'Type','axes');
     if ~isempty(ax)

@@ -28,9 +28,11 @@
 
 ## 图片
 
-- [三轴速度变化](figs/fig_static_01_velocity_change.png)
-- [速度变化模长](figs/fig_static_02_velocity_drift_norm.png)
-- [三轴位置位移](figs/fig_static_03_position_displacement.png)
-- [三轴姿态变化](figs/fig_static_04_attitude_drift.png)
-- [补偿相对原始的速度差](figs/fig_static_05_velocity_diff_vs_raw.png)
-- [补偿相对原始的位置差](figs/fig_static_06_position_diff_vs_raw.png)
+静止真值取共同初始状态，因此速度变化、位置变化、姿态变化分别记作速度误差、位置误差和姿态误差。图片采用 IEEE 单栏宽度、Times New Roman 8 pt、600 dpi，并用颜色和线型双重编码。
+
+- [速度三轴误差](figs/fig_static_01_velocity_error_axes.png)
+- [速度误差模值](figs/fig_static_02_velocity_error_norm.png)
+- [位置三轴误差](figs/fig_static_03_position_error_axes.png)
+- [位置误差模值](figs/fig_static_04_position_error_norm.png)
+- [姿态三轴误差](figs/fig_static_05_attitude_error_axes.png)
+- [姿态误差模值](figs/fig_static_06_attitude_error_norm.png)

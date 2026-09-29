@@ -22,6 +22,7 @@ mx.scratch/
 # Large recordings and generated analysis products
 /data/decoded/*
 !/data/decoded/.gitkeep
+!/data/decoded/20260923104556_电动车2/
 /data/calib24/[0-9][0-9].csv
 /data/allan_results/*
 !/data/allan_results/.gitkeep

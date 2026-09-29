@@ -16,7 +16,7 @@
 | `compare_acc_calibration_static_ins.m` | 从本会话静止区间做三路纯 INS 对照 |
 | `static_ins_acc_cal_summary.csv` | 三路静止传播汇总指标 |
 | `static_ins_acc_cal_compare.mat` | 完整中间变量和时序结果 |
-| `figs/` | 动态松组合 8 张图、静止三路对比 6 张图 |
+| `figs/` | 动态松组合 8 张图、静止三路误差对比 6 张 IEEE 风格图 |
 
 ## 参数依赖与运行方式
 
@@ -32,7 +32,7 @@ matlab -batch "set(groot,'defaultFigureVisible','off'); run(fullfile(pwd,'data',
 matlab -batch "set(groot,'defaultFigureVisible','off'); run(fullfile(pwd,'data','decoded','20260923104556_电动车2','compare_acc_calibration_static_ins.m'));"
 ```
 
-`test.m` 会将 PSINS 原始诊断图和 GNSS/INS 速度、滤波器零偏、姿态、车速及 ZUPT 对照图写入 `figs/fig_dyn_*.png`；静止脚本写入 `figs/fig_static_*.png`，并更新 CSV、MAT 和 Markdown 汇总。
+`test.m` 会将 PSINS 原始诊断图和 GNSS/INS 速度、滤波器零偏、姿态、车速及 ZUPT 对照图写入 `figs/fig_dyn_*.png`。静止脚本将速度、位置、姿态相对共同初始状态的变化定义为误差；每项分别输出“三轴误差”和“三维模值”两张 IEEE 单栏图，共 6 张 `fig_static_*.png`，并更新 CSV、MAT 和 Markdown 汇总。
 
 ## 结果边界
 
