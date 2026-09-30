@@ -1,31 +1,29 @@
 #!/usr/bin/env python3
-"""Three-config Allan-variance comparison for the MPU6050 temp-compensation study.
+r"""Compare Allan deviation before/after MPU6050 temperature compensation.
 
-Stages compared on the same long static recording (21 h outdoor):
+Stages are configurable: ``raw`` (original), ``tc`` (temperature compensated),
+and ``calib`` (TC plus matching 24-position calibration).
 
-  1. raw            recorded IMU data, nothing applied
-  2. raw+TC         per-axis temperature compensation (no 0-order), only axes
-                    whose enable bit is 1 (default az 3rd / gx 5th / gy 5th)
-  3. raw+TC+calib   stage 2 plus the MATCHING 24-position calibration
-                    (a_cal = Ca*(a_tc - ba), g_cal = g_tc - gb)
+Recommended command for a PPT-ready Raw/TC comparison::
 
-Rationale: with GNSS correcting at 1 Hz and outages shorter than 600 s, the
-figure of merit is short/medium tau behaviour, not multi-hour Allan numbers.
-This tool therefore reports Allan deviation at tau = 30/60/180/300/600/1000/3600 s
-plus the identified stochastic parameters, and a 600 s block-mean drift std.
+python -X utf8 tools/allan_compare_tc_configs.py `
+  data/decoded/20260926005735/imu.csv `
+  --stages raw,tc `
+  --tc-csv data/decoded/20260926005735/imu_tempcomp_multiorder.csv `
+  --plot-layout sensor-pair `
+  --plot-size 1800x780 `
+  --output data/decoded/20260926005735/allan_raw_tc
 
-Usage:
+
   python tools/allan_compare_tc_configs.py data/decoded/<session>/imu.csv \
-      --coeff data/calib24/temp_coeffs_raw.csv \
-      --calib data/calib24/calib24_result_tempcomp_azgxgy.mat \
-      --enable 0,0,1,1,1,0
+      --stages raw,tc \
+      --tc-csv data/decoded/<session>/imu_tempcomp_multiorder.csv \
+      --plot-layout sensor-pair --plot-size 1800x780 --dpi 300
 
-Outputs (default <imu dir>/allan_compare_tc_configs/):
-  allan_three_configs.png        2x3 grid, 3 stage curves per axis
-  allan_adev_at_tau.csv          adev at fixed tau + 600 s block std, per stage/axis
-  allan_three_configs_params.csv identified ARW/VRW, BI, RRW, Ramp per stage/axis
-  allan_deviation.csv            full adev curves (tau + 18 columns)
-  温补配置Allan对比报告.md        Chinese summary report
+With exactly raw and tc selected, one figure contains two panels (accelerometer
+and gyroscope); each panel contains Raw/TC curves for X/Y/Z. ``--plot-size``
+controls the PNG dimensions exactly. For a 600x260 display area in PowerPoint,
+1800x780 at 300 dpi provides a sharp 3x-resolution source image.
 """
 
 from __future__ import annotations
@@ -45,10 +43,18 @@ import scipy.io as sio
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import allan_noise_identification as ani  # noqa: E402
 
-G0 = 9.80665                      # tool convention for mg display
+G0 = 9.80665
 DEG_H_TO_RAD_S = math.pi / 180.0 / 3600.0
 AXES = ["ax", "ay", "az", "gx", "gy", "gz"]
-STAGES = ["raw", "raw+TC", "raw+TC+calib"]
+VALUE_COLUMNS = ["ax_m_s2", "ay_m_s2", "az_m_s2", "gx_deg_h", "gy_deg_h", "gz_deg_h"]
+STAGE_ALIASES = {
+    "raw": "raw",
+    "tc": "raw+TC",
+    "raw+tc": "raw+TC",
+    "calib": "raw+TC+calib",
+    "raw+tc+calib": "raw+TC+calib",
+}
+STAGE_LABELS = {"raw": "Raw", "raw+TC": "TC", "raw+TC+calib": "TC+Calib"}
 TAU_TARGETS = [30.0, 60.0, 180.0, 300.0, 600.0, 1000.0, 3600.0]
 BLOCK_SEC = 600.0
 
@@ -56,8 +62,32 @@ plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Noto Sans CJK S
 plt.rcParams["axes.unicode_minus"] = False
 
 
+def parse_stages(text: str) -> list[str]:
+    stages: list[str] = []
+    for token in (part.strip().lower() for part in text.split(",")):
+        if token not in STAGE_ALIASES:
+            raise argparse.ArgumentTypeError(f"unknown stage {token!r}; use raw, tc, calib")
+        stage = STAGE_ALIASES[token]
+        if stage not in stages:
+            stages.append(stage)
+    if not stages:
+        raise argparse.ArgumentTypeError("at least one stage is required")
+    return stages
+
+
+def parse_plot_size(text: str) -> tuple[int, int]:
+    try:
+        width_text, height_text = text.lower().replace(",", "x").split("x", 1)
+        width, height = int(width_text), int(height_text)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("--plot-size must look like 600x260") from exc
+    if width < 320 or height < 180:
+        raise argparse.ArgumentTypeError("--plot-size is too small (minimum 320x180)")
+    return width, height
+
+
 def adev_at_tau(values: np.ndarray, period: float, taus) -> dict[float, float]:
-    """Overlapping Allan deviation evaluated exactly at the requested taus."""
+    """Overlapping Allan deviation evaluated exactly at requested taus."""
     v = np.asarray(values, dtype=np.float64)
     v = v - v.mean()
     n = v.size
@@ -66,311 +96,383 @@ def adev_at_tau(values: np.ndarray, period: float, taus) -> dict[float, float]:
     np.cumsum(v, out=integral[1:])
     integral *= period
     out: dict[float, float] = {}
-    for t in taus:
-        m = max(1, int(round(t / period)))
+    for tau in taus:
+        m = max(1, int(round(tau / period)))
         if 2 * m >= n:
-            out[t] = float("nan")
+            out[tau] = float("nan")
             continue
         second = integral[2 * m:] - 2.0 * integral[m:-m] + integral[:-2 * m]
-        var = float(np.dot(second, second)) / (second.size * 2.0 * (m * period) ** 2)
-        out[t] = math.sqrt(max(var, 0.0))
+        variance = float(np.dot(second, second)) / (second.size * 2.0 * (m * period) ** 2)
+        out[tau] = math.sqrt(max(variance, 0.0))
     return out
 
 
 def block_mean_std(values: np.ndarray, period: float, block_sec: float = BLOCK_SEC) -> float:
     m = max(1, int(round(block_sec / period)))
-    nb = values.size // m
-    if nb < 2:
+    blocks = values.size // m
+    if blocks < 2:
         return float("nan")
-    bm = values[: nb * m].reshape(nb, m).mean(axis=1)
-    return float(np.std(bm - np.median(bm), ddof=1))
+    means = values[: blocks * m].reshape(blocks, m).mean(axis=1)
+    return float(np.std(means - np.median(means), ddof=1))
 
 
 def load_coeffs(path: pathlib.Path) -> tuple[np.ndarray, np.ndarray, float, dict]:
-    """Return (coef 6x6 [c5..c0], orders 6, Tref, MAT metadata)."""
-    cf = pd.read_csv(path)
+    """Return coefficient matrix [c5..c0], orders, Tref, and MAT metadata."""
+    frame = pd.read_csv(path)
     required = {"axis", "order", "c0", "c1", "c2", "c3", "c4", "c5"}
-    missing = required.difference(cf.columns)
+    missing = required.difference(frame.columns)
     if missing:
         raise SystemExit(f"--coeff: missing columns {sorted(missing)}")
-    if len(cf) != 6:
+    if len(frame) != 6:
         raise SystemExit("--coeff: exactly six axis rows are required")
-    coef = cf[["c5", "c4", "c3", "c2", "c1", "c0"]].to_numpy(dtype=np.float64)
-    orders = cf["order"].to_numpy(dtype=int)
-    if not np.isfinite(coef).all() or np.any((orders < 0) | (orders > 5)):
+    coefficient = frame[["c5", "c4", "c3", "c2", "c1", "c0"]].to_numpy(dtype=np.float64)
+    orders = frame["order"].to_numpy(dtype=int)
+    if not np.isfinite(coefficient).all() or np.any((orders < 0) | (orders > 5)):
         raise SystemExit("--coeff: invalid polynomial coefficients or orders")
     mat_path = path.with_suffix(".mat")
-    if mat_path.is_file():
-        meta = sio.loadmat(mat_path, simplify_cells=True)
-        tref = float(meta["Tref"])
-        if not np.allclose(np.asarray(meta["coef"], dtype=float), coef,
-                           rtol=1e-13, atol=1e-12):
-            raise SystemExit("--coeff: CSV and companion MAT coefficient matrices differ")
-    else:
+    if not mat_path.is_file():
         raise SystemExit(f"--coeff: companion MAT metadata is required (missing {mat_path})")
-    return coef, orders, tref, meta
+    metadata = sio.loadmat(mat_path, simplify_cells=True)
+    tref = float(metadata["Tref"])
+    if not np.allclose(np.asarray(metadata["coef"], dtype=float), coefficient,
+                       rtol=1e-13, atol=1e-12):
+        raise SystemExit("--coeff: CSV and companion MAT coefficient matrices differ")
+    return coefficient, orders, tref, metadata
 
 
-def calibration_field(cal: np.ndarray, name: str) -> np.ndarray:
-    if cal.dtype.names is None or name not in cal.dtype.names:
+def calibration_field(calibration: np.ndarray, name: str) -> np.ndarray:
+    if calibration.dtype.names is None or name not in calibration.dtype.names:
         raise SystemExit(f"--calib: result.{name} is required")
-    return np.asarray(cal[name]).squeeze()
+    return np.asarray(calibration[name]).squeeze()
+
+
+def read_imu_csv(path: pathlib.Path, need_temperature: bool, label: str):
+    columns = ["sample", "time_s", *VALUE_COLUMNS]
+    if need_temperature:
+        columns.append("temp_deg_c")
+    try:
+        frame = pd.read_csv(path, usecols=columns, dtype=np.float64)
+    except (ValueError, FileNotFoundError) as exc:
+        raise SystemExit(f"{label}: cannot read required IMU columns from {path}: {exc}") from exc
+    if len(frame) < 1000:
+        raise SystemExit(f"{label}: at least 1000 samples are required")
+    if not np.isfinite(frame.to_numpy()).all():
+        raise SystemExit(f"{label}: input contains NaN/Inf")
+    samples = frame["sample"].to_numpy(dtype=np.int64, copy=True)
+    times = frame["time_s"].to_numpy(dtype=np.float64, copy=True)
+    values = frame[VALUE_COLUMNS].to_numpy(dtype=np.float64, copy=True)
+    temperature = (frame["temp_deg_c"].to_numpy(dtype=np.float64, copy=True)
+                   if need_temperature else None)
+    return samples, times, values, temperature
+
+
+def validate_sequence(samples: np.ndarray, times: np.ndarray, label: str) -> float:
+    time_steps = np.diff(times)
+    if np.any(time_steps <= 0) or np.any(np.diff(samples) != 1):
+        raise SystemExit(f"{label}: time/sample sequence is not strictly contiguous")
+    median_period = float(np.median(time_steps))
+    if np.any(time_steps > 1.5 * median_period):
+        raise SystemExit(f"{label}: input contains a time gap; split the recording first")
+    return median_period
+
+
+def save_sensor_pair_figure(curves, stages, output, pixel_size, dpi) -> None:
+    """Save one PPT-friendly figure containing accelerometer and gyro panels."""
+    width, height = pixel_size
+    fig, plot_axes = plt.subplots(1, 2, figsize=(width / dpi, height / dpi), dpi=dpi)
+    axis_colors = {"x": "#0072B2", "y": "#D55E00", "z": "#009E73"}
+    stage_styles = {
+        "raw": ("--", 1.05, 0.82),
+        "raw+TC": ("-", 1.50, 1.0),
+        "raw+TC+calib": (":", 1.35, 0.95),
+    }
+    panel_specs = [
+        (plot_axes[0], AXES[:3], 1000.0 / G0, "ACCE Allan dev. (mg)"),
+        (plot_axes[1], AXES[3:], 180.0 / math.pi * 3600.0,
+         "GYRO Allan dev. (deg/h)"),
+    ]
+    for plot_axis, sensor_axes, conversion, ylabel in panel_specs:
+        for stage in stages:
+            linestyle, linewidth, alpha = stage_styles[stage]
+            for axis in sensor_axes:
+                tau, adev = curves[(stage, axis)]
+                axis_letter = axis[-1]
+                line, = plot_axis.loglog(
+                    tau, adev * conversion,
+                    color=axis_colors[axis_letter], linestyle=linestyle,
+                    linewidth=linewidth, alpha=alpha,
+                    label=f"{STAGE_LABELS[stage]} {axis_letter.upper()}",
+                )
+        plot_axis.set_xlabel(r"$\tau$ (s)", fontsize=8.0, labelpad=1)
+        plot_axis.set_ylabel(ylabel, fontsize=8.0, labelpad=1)
+        plot_axis.tick_params(axis="both", which="major", labelsize=7.0, length=2.5, pad=1.5)
+        plot_axis.tick_params(axis="both", which="minor", length=1.5)
+        plot_axis.grid(True, which="major", color="#b8b8b8", linewidth=0.45, alpha=0.65)
+        plot_axis.grid(True, which="minor", color="#dddddd", linewidth=0.30, alpha=0.45)
+        handles, labels = plot_axis.get_legend_handles_labels()
+        # Matplotlib fills a multi-column legend column-first. Interleave the
+        # stage handles by axis so the rendered rows become Raw X/Y/Z, then
+        # TC X/Y/Z (and likewise for any additional selected stage).
+        stage_count = len(stages)
+        legend_order = [stage_index * 3 + axis_index
+                        for axis_index in range(3)
+                        for stage_index in range(stage_count)]
+        plot_axis.legend(
+            [handles[index] for index in legend_order],
+            [labels[index] for index in legend_order],
+            loc="upper center", ncol=3, frameon=True, framealpha=0.82,
+            facecolor="white", edgecolor="#cccccc", fontsize=6.3,
+            handlelength=1.8, columnspacing=0.75, handletextpad=0.35,
+            borderpad=0.30, labelspacing=0.25,
+        )
+
+    fig.subplots_adjust(left=0.090, right=0.990, bottom=0.185, top=0.975, wspace=0.31)
+    fig.savefig(output, dpi=dpi, facecolor="white")
+    plt.close(fig)
+
+
+def save_per_axis_figure(curves, stages, output, pixel_size, dpi) -> None:
+    width, height = pixel_size
+    colors = {"raw": "#8c8c8c", "raw+TC": "#1f77b4", "raw+TC+calib": "#d62728"}
+    fig, axes = plt.subplots(2, 3, figsize=(width / dpi, height / dpi), dpi=dpi)
+    for index, axis in enumerate(AXES):
+        plot_axis = axes.flat[index]
+        conversion = 180.0 / math.pi * 3600.0 if index >= 3 else 1000.0 / G0
+        for stage in stages:
+            tau, adev = curves[(stage, axis)]
+            plot_axis.loglog(tau, adev * conversion, color=colors[stage], lw=1.1,
+                             label=STAGE_LABELS[stage])
+        plot_axis.set_title(axis.upper(), fontsize=7)
+        plot_axis.set_xlabel(r"$\tau$ (s)", fontsize=6)
+        plot_axis.set_ylabel("deg/h" if index >= 3 else "mg", fontsize=6)
+        plot_axis.tick_params(labelsize=5.5)
+        plot_axis.grid(True, which="both", alpha=0.30)
+        if index == 0:
+            plot_axis.legend(fontsize=5.5)
+    fig.tight_layout(pad=0.5)
+    fig.savefig(output, dpi=dpi, facecolor="white")
+    plt.close(fig)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("csv", type=pathlib.Path, help="Physical-unit IMU CSV (imu.csv)")
-    parser.add_argument("--coeff", type=pathlib.Path, required=True,
-                        help="temp_coeffs_raw.csv (axis,order,c0..c5)")
-    parser.add_argument("--calib", type=pathlib.Path, required=True,
-                        help="matching 24-pos calibration mat (calib24_result_tempcomp_*.mat)")
+    parser.add_argument("csv", type=pathlib.Path, help="raw physical-unit IMU CSV")
+    parser.add_argument("--stages", type=parse_stages, default=parse_stages("raw,tc,calib"),
+                        help="comma-separated stages: raw,tc,calib")
+    parser.add_argument("--tc-csv", type=pathlib.Path,
+                        help="already temperature-compensated IMU CSV; skips TC recalculation")
+    parser.add_argument("--coeff", type=pathlib.Path,
+                        help="temp_coeffs_raw.csv; required when TC must be calculated")
+    parser.add_argument("--calib", type=pathlib.Path,
+                        help="matching 24-position calibration MAT; required for calib stage")
     parser.add_argument("--enable", default="0,0,1,1,1,0",
-                        help="per-axis TC enable ax,ay,az,gx,gy,gz (default 0,0,1,1,1,0)")
+                        help="per-axis TC enable ax,ay,az,gx,gy,gz")
     parser.add_argument("--rate", type=float, default=None,
                         help="override sample rate; default derives it from time_s")
-    parser.add_argument("--points", type=int, default=90)
-    parser.add_argument("--tref", type=float, default=None, help="override Tref")
+    parser.add_argument("--points", type=int, default=90,
+                        help="number of logarithmic Allan tau points")
+    parser.add_argument("--tref", type=float, default=None, help="override coefficient Tref")
+    parser.add_argument("--plot-layout", choices=("auto", "sensor-pair", "per-axis"), default="auto",
+                        help="auto uses sensor-pair for raw+tc, otherwise per-axis")
+    parser.add_argument("--plot-size", type=parse_plot_size, default=parse_plot_size("1800x780"),
+                        help="source PNG pixels; use 1800x780 for a 600x260 PPT display area")
+    parser.add_argument("--dpi", type=int, default=300,
+                        help="rendering DPI; output pixels remain controlled by --plot-size")
     parser.add_argument("--output", type=pathlib.Path, default=None)
     args = parser.parse_args()
 
+    if args.points < 20:
+        raise SystemExit("--points must be at least 20")
+    if args.dpi < 50:
+        raise SystemExit("--dpi must be at least 50")
     try:
-        enable_bits = np.array([int(v) for v in args.enable.split(",")], dtype=int)
+        enable_bits = np.array([int(value) for value in args.enable.split(",")], dtype=int)
     except ValueError as exc:
         raise SystemExit("--enable needs 6 comma-separated 0/1 values") from exc
     if enable_bits.size != 6 or not np.isin(enable_bits, [0, 1]).all():
         raise SystemExit("--enable needs 6 comma-separated bits")
     enable = enable_bits.astype(bool)
 
-    print(f"Loading {args.csv} ...", flush=True)
-    cols = ["sample", "time_s", "ax_m_s2", "ay_m_s2", "az_m_s2",
-            "temp_deg_c", "gx_deg_h", "gy_deg_h", "gz_deg_h"]
-    df = pd.read_csv(args.csv, usecols=cols, dtype=np.float64)
-    if not np.isfinite(df.to_numpy()).all():
-        raise SystemExit("input contains NaN/Inf; refusing to concatenate samples silently")
-    n = len(df)
-    times = df["time_s"].to_numpy()
-    dt = np.diff(times)
-    sample_step = np.diff(df["sample"].to_numpy())
-    if np.any(dt <= 0) or np.any(sample_step != 1):
-        raise SystemExit("input time/sample sequence is not strictly contiguous")
-    median_period = float(np.median(dt))
-    if np.any(dt > 1.5 * median_period):
-        raise SystemExit("input contains a time gap; split the recording before comparison")
-    period = 1.0 / args.rate if args.rate else float((times[-1] - times[0]) / (n - 1))
-    duration_h = (n - 1) * period / 3600.0
-    print(f"samples: {n:,}  duration: {duration_h:.2f} h", flush=True)
+    selected_stages: list[str] = args.stages
+    needs_tc = "raw+TC" in selected_stages or "raw+TC+calib" in selected_stages
+    needs_calib = "raw+TC+calib" in selected_stages
+    if needs_tc and args.tc_csv is None and args.coeff is None:
+        raise SystemExit("TC stage needs --tc-csv or --coeff")
+    if needs_calib and args.calib is None:
+        raise SystemExit("calib stage needs --calib")
+    if needs_calib and args.coeff is None:
+        raise SystemExit("calib stage needs --coeff to verify the matching TC model")
 
-    coef, orders, tref, coeff_meta = load_coeffs(args.coeff)
-    if args.tref is not None:
-        tref = args.tref
-    tcpoly = np.hstack([coef[:, 0:5], np.zeros((6, 1))])   # [c5 c4 c3 c2 c1 0]
+    calculate_tc = needs_tc and args.tc_csv is None
+    print(f"Loading raw data: {args.csv}", flush=True)
+    samples, times, raw, temperature = read_imu_csv(args.csv, calculate_tc, "raw CSV")
+    median_period = validate_sequence(samples, times, "raw CSV")
+    sample_count = len(times)
+    period = 1.0 / args.rate if args.rate else float((times[-1] - times[0]) / (sample_count - 1))
+    duration_h = (sample_count - 1) * period / 3600.0
+    print(f"samples: {sample_count:,}; duration: {duration_h:.2f} h; rate: {1.0 / period:.4f} Hz",
+          flush=True)
 
-    active_from_model = orders > 0
-    if not np.array_equal(enable, active_from_model):
-        raise SystemExit(
-            f"--enable {enable_bits.tolist()} differs from coefficient orders>0 "
-            f"{active_from_model.astype(int).tolist()}")
+    stages: dict[str, np.ndarray] = {"raw": raw}
+    coefficient = orders = coefficient_metadata = None
+    tref = tcpoly = None
+    if args.coeff is not None:
+        coefficient, orders, tref, coefficient_metadata = load_coeffs(args.coeff)
+        if args.tref is not None:
+            tref = args.tref
+        tcpoly = np.hstack([coefficient[:, 0:5], np.zeros((6, 1))])
+        active_from_model = orders > 0
+        if not np.array_equal(enable, active_from_model):
+            raise SystemExit(
+                f"--enable {enable_bits.tolist()} differs from coefficient orders>0 "
+                f"{active_from_model.astype(int).tolist()}")
 
-    cal = sio.loadmat(args.calib)["result"][0, 0]
-    ba = calibration_field(cal, "ba").astype(np.float64).reshape(3)
-    Ca = calibration_field(cal, "Ca").astype(np.float64).reshape(3, 3)
-    gb = calibration_field(cal, "gyroBiasMean_deg_h").astype(np.float64).reshape(3)
-    cal_coeff = calibration_field(cal, "tempCoeff").astype(np.float64).reshape(6, 6)
-    cal_tref = float(calibration_field(cal, "Tref"))
-    cal_active = calibration_field(cal, "tcActive").astype(bool).reshape(6)
-    if not np.allclose(cal_coeff, tcpoly, rtol=1e-13, atol=1e-12):
-        raise SystemExit("--calib and --coeff contain different temperature models")
-    if abs(cal_tref - tref) > 1e-10:
-        raise SystemExit("--calib and --coeff use different reference temperatures")
-    if not np.array_equal(cal_active, enable):
-        raise SystemExit("--calib active axes differ from --enable")
-    print(f"T0 = {tref:.4f} C; orders {orders.astype(int)}; enable {enable.astype(int)}")
-    print(f"ba = {np.round(ba, 5)}  gb[deg/h] = {np.round(gb, 2)}")
+    if needs_tc:
+        if args.tc_csv is not None:
+            print(f"Loading temperature-compensated data: {args.tc_csv}", flush=True)
+            tc_samples, tc_times, stage2, _ = read_imu_csv(args.tc_csv, False, "TC CSV")
+            validate_sequence(tc_samples, tc_times, "TC CSV")
+            tolerance = max(1e-9, median_period * 1e-5)
+            if not np.array_equal(tc_samples, samples):
+                raise SystemExit("TC CSV sample numbers do not align with raw CSV")
+            if not np.allclose(tc_times, times, rtol=0.0, atol=tolerance):
+                raise SystemExit("TC CSV timestamps do not align with raw CSV")
+        else:
+            assert tcpoly is not None and tref is not None and coefficient_metadata is not None
+            assert temperature is not None
+            tmin = float(coefficient_metadata["Tmin"])
+            tmax = float(coefficient_metadata["Tmax"])
+            if temperature.min() < tmin - 1e-9 or temperature.max() > tmax + 1e-9:
+                raise SystemExit(
+                    f"input temperature [{temperature.min():.4f}, {temperature.max():.4f}] C exceeds "
+                    f"fitted range [{tmin:.4f}, {tmax:.4f}] C")
+            delta_temperature = temperature - tref
+            correction = np.array([
+                np.polyval(tcpoly[index], delta_temperature) if enable[index]
+                else np.zeros(sample_count)
+                for index in range(6)
+            ]).T
+            stage2 = raw - correction
+        stages["raw+TC"] = stage2
 
-    temp = df["temp_deg_c"].to_numpy()
-    tmin = float(coeff_meta["Tmin"])
-    tmax = float(coeff_meta["Tmax"])
-    if temp.min() < tmin - 1e-9 or temp.max() > tmax + 1e-9:
-        raise SystemExit(
-            f"input temperature [{temp.min():.4f}, {temp.max():.4f}] C exceeds "
-            f"fitted range [{tmin:.4f}, {tmax:.4f}] C")
-    dT = temp - tref
-    raw = df[["ax_m_s2", "ay_m_s2", "az_m_s2", "gx_deg_h", "gy_deg_h", "gz_deg_h"]].to_numpy()
+    if needs_calib:
+        assert args.calib is not None and tcpoly is not None and tref is not None
+        calibration = sio.loadmat(args.calib)["result"][0, 0]
+        ba = calibration_field(calibration, "ba").astype(np.float64).reshape(3)
+        ca = calibration_field(calibration, "Ca").astype(np.float64).reshape(3, 3)
+        gb = calibration_field(calibration, "gyroBiasMean_deg_h").astype(np.float64).reshape(3)
+        cal_coeff = calibration_field(calibration, "tempCoeff").astype(np.float64).reshape(6, 6)
+        cal_tref = float(calibration_field(calibration, "Tref"))
+        cal_active = calibration_field(calibration, "tcActive").astype(bool).reshape(6)
+        if not np.allclose(cal_coeff, tcpoly, rtol=1e-13, atol=1e-12):
+            raise SystemExit("--calib and --coeff contain different temperature models")
+        if abs(cal_tref - tref) > 1e-10:
+            raise SystemExit("--calib and --coeff use different reference temperatures")
+        if not np.array_equal(cal_active, enable):
+            raise SystemExit("--calib active axes differ from --enable")
+        stage3 = stages["raw+TC"].copy()
+        stage3[:, 0:3] = (stage3[:, 0:3] - ba) @ ca.T
+        stage3[:, 3:6] -= gb
+        stages["raw+TC+calib"] = stage3
 
-    # stage 2: per-axis temperature compensation (no 0-order), masked
-    tc = np.array([np.polyval(tcpoly[k], dT) if enable[k] else np.zeros(n)
-                   for k in range(6)]).T
-    stage2 = raw - tc
-
-    # stage 3: matching 24-pos calibration on top of stage 2
-    a_cal = (stage2[:, 0:3] - ba) @ Ca.T
-    stage3 = stage2.copy()
-    stage3[:, 0:3] = a_cal
-    stage3[:, 3:6] = stage2[:, 3:6] - gb
-
-    stages = {"raw": raw, "raw+TC": stage2, "raw+TC+calib": stage3}
-
-    # ---- per-axis analysis ----
+    print("Selected stages: " + ", ".join(STAGE_LABELS[stage] for stage in selected_stages), flush=True)
     results: dict[tuple[str, str], ani.AxisResult] = {}
-    tau_table: list[dict] = []
     curves: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
-
-    for k, axis in enumerate(AXES):
-        is_gyro = k >= 3
+    tau_table: list[dict] = []
+    for axis_index, axis in enumerate(AXES):
+        is_gyro = axis_index >= 3
         scale = DEG_H_TO_RAD_S if is_gyro else 1.0
-        for stage in STAGES:
-            values = stages[stage][:, k] * scale
-            unit = "rad/s" if is_gyro else "m/s^2"
-            res = ani.analyze_axis("gyro" if is_gyro else "accel", axis[-1],
-                                   values, unit, period, args.points, n * period)
-            results[(stage, axis)] = res
-            curves[(stage, axis)] = (res.tau, res.adev)
-
-        # fixed-tau table in display units (mg / deg/h)
-        conv = 1.0 / G0 * 1000.0 if not is_gyro else 180.0 / math.pi * 3600.0
-        unit = "mg" if not is_gyro else "deg/h"
+        conversion = 180.0 / math.pi * 3600.0 if is_gyro else 1000.0 / G0
+        unit = "deg/h" if is_gyro else "mg"
         row = {"axis": axis, "unit": unit}
-        for stage in STAGES:
-            values = stages[stage][:, k] * scale    # SI: m/s^2 或 rad/s
-            adevs = adev_at_tau(values, period, TAU_TARGETS)
-            row[f"{stage}_block600_std"] = block_mean_std(values, period) * conv
-            for t in TAU_TARGETS:
-                row[f"{stage}_adev_{int(t)}s"] = adevs[t] * conv
+        for stage in selected_stages:
+            values = stages[stage][:, axis_index] * scale
+            result = ani.analyze_axis(
+                "gyro" if is_gyro else "accel", axis[-1], values,
+                "rad/s" if is_gyro else "m/s^2", period, args.points,
+                sample_count * period,
+            )
+            results[(stage, axis)] = result
+            curves[(stage, axis)] = (result.tau, result.adev)
+            fixed_tau = adev_at_tau(values, period, TAU_TARGETS)
+            row[f"{stage}_block600_std"] = block_mean_std(values, period) * conversion
+            for tau in TAU_TARGETS:
+                row[f"{stage}_adev_{int(tau)}s"] = fixed_tau[tau] * conversion
         tau_table.append(row)
-        print(f"  {axis}: adev@600s raw/TC/TC+calib = "
-              f"{row['raw_adev_600s']:.4g} / {row['raw+TC_adev_600s']:.4g} / "
-              f"{row['raw+TC+calib_adev_600s']:.4g} {row['unit']}", flush=True)
+        summary = " / ".join(
+            f"{STAGE_LABELS[stage]} {row[f'{stage}_adev_600s']:.4g}"
+            for stage in selected_stages
+        )
+        print(f"  {axis}: adev@600s {summary} {unit}", flush=True)
 
-    out = args.output or (args.csv.resolve().parent / "allan_compare_tc_configs")
-    out.mkdir(parents=True, exist_ok=True)
+    output_dir = args.output or (args.csv.resolve().parent / "allan_compare_tc_configs")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    layout = args.plot_layout
+    if layout == "auto":
+        layout = "sensor-pair" if selected_stages == ["raw", "raw+TC"] else "per-axis"
+    width, height = args.plot_size
+    if layout == "sensor-pair":
+        figure_path = output_dir / f"allan_raw_tc_{width}x{height}.png"
+        save_sensor_pair_figure(curves, selected_stages, figure_path, args.plot_size, args.dpi)
+    else:
+        figure_path = output_dir / f"allan_per_axis_{width}x{height}.png"
+        save_per_axis_figure(curves, selected_stages, figure_path, args.plot_size, args.dpi)
 
-    # ---- figure ----
-    colors = {"raw": "#8c8c8c", "raw+TC": "#1f77b4", "raw+TC+calib": "#d62728"}
-    fig, axes = plt.subplots(2, 3, figsize=(16, 9), constrained_layout=True)
-    for idx, axis in enumerate(AXES):
-        ax = axes.flat[idx]
-        for stage in STAGES:
-            tau, adev = curves[(stage, axis)]
-            conv = (180.0 / math.pi * 3600.0) if idx >= 3 else (1.0 / G0 * 1000.0)
-            ax.loglog(tau, adev * conv, color=colors[stage], lw=1.6,
-                      label=stage)
-        for t in TAU_TARGETS:
-            ax.axvline(t, color="#bbbbbb", lw=0.5, ls=":", zorder=0)
-        ax.set(title=f"{axis.upper()}  (TC {'on' if enable[idx] else 'off'}, "
-                    f"order {int(orders[idx])})",
-               xlabel="tau (s)",
-               ylabel="Allan deviation (deg/h)" if idx >= 3 else "Allan deviation (mg)")
-        ax.grid(True, which="both", alpha=0.30)
-        if idx == 0:
-            ax.legend(fontsize=9)
-    fig.suptitle("温补三方案 Allan 对比 (raw / raw+TC / raw+TC+calib, "
-                 f"enable={''.join(str(int(e)) for e in enable)})", fontsize=14)
-    fig.savefig(out / "allan_three_configs.png", dpi=160)
-    plt.close(fig)
+    tau_columns = ["axis", "unit"]
+    tau_columns += [f"{stage}_block600_std" for stage in selected_stages]
+    tau_columns += [f"{stage}_adev_{int(tau)}s"
+                    for stage in selected_stages for tau in TAU_TARGETS]
+    pd.DataFrame(tau_table)[tau_columns].to_csv(
+        output_dir / "allan_adev_at_tau.csv", index=False, encoding="utf-8-sig")
 
-    # ---- CSVs ----
-    tau_cols = ["axis", "unit"] + [f"{s}_block600_std" for s in STAGES] + \
-               [f"{s}_adev_{int(t)}s" for s in STAGES for t in TAU_TARGETS]
-    pd.DataFrame(tau_table)[tau_cols].to_csv(out / "allan_adev_at_tau.csv",
-                                             index=False, encoding="utf-8-sig")
-
-    param_rows = []
-    for (stage, axis), res in results.items():
-        disp = ani.parameter_display(res)
-        param_rows.append({
+    parameter_rows = []
+    for (stage, axis), result in results.items():
+        display = ani.parameter_display(result)
+        parameter_rows.append({
             "stage": stage, "axis": axis,
-            "arw_vrw": disp["white_primary"][0], "arw_vrw_unit": disp["white_primary"][1],
-            "bias_instability": disp["bias_primary"][0], "bias_instability_unit": disp["bias_primary"][1],
-            "rrw": disp["rrw_primary"][0], "rrw_unit": disp["rrw_primary"][1],
-            "rate_ramp": disp["ramp_primary"][0], "rate_ramp_unit": disp["ramp_primary"][1],
+            "arw_vrw": display["white_primary"][0],
+            "arw_vrw_unit": display["white_primary"][1],
+            "bias_instability": display["bias_primary"][0],
+            "bias_instability_unit": display["bias_primary"][1],
+            "rrw": display["rrw_primary"][0],
+            "rrw_unit": display["rrw_primary"][1],
+            "rate_ramp": display["ramp_primary"][0],
+            "rate_ramp_unit": display["ramp_primary"][1],
         })
-    pd.DataFrame(param_rows).to_csv(out / "allan_three_configs_params.csv",
-                                    index=False, encoding="utf-8-sig")
+    pd.DataFrame(parameter_rows).to_csv(
+        output_dir / "allan_selected_stages_params.csv", index=False, encoding="utf-8-sig")
 
-    tau0 = curves[("raw", "ax")][0]
-    curve_cols = [tau0] + [curves[(s, a)][1] for s in STAGES for a in AXES]
-    header = "tau_s," + ",".join(f"{s}_{a}_adev_rad_s_or_m_s2" for s in STAGES for a in AXES)
-    np.savetxt(out / "allan_deviation.csv", np.column_stack(curve_cols),
+    reference_tau = curves[(selected_stages[0], "ax")][0]
+    curve_columns = [reference_tau] + [curves[(stage, axis)][1]
+                                       for stage in selected_stages for axis in AXES]
+    header = "tau_s," + ",".join(
+        f"{stage}_{axis}_adev_rad_s_or_m_s2"
+        for stage in selected_stages for axis in AXES)
+    np.savetxt(output_dir / "allan_deviation.csv", np.column_stack(curve_columns),
                delimiter=",", header=header, comments="")
 
-    # ---- markdown report ----
-    def fmt(v):
-        return "—" if not math.isfinite(v) else f"{v:.4g}"
-
-    lines = [
-        "# 温补三方案 Allan 对比报告（raw / raw+TC / raw+TC+calib）",
-        "",
-        f"- 数据：`{args.csv.name}`（{duration_h:.2f} h 静态，{1/period:.4f} Hz）",
-        f"- 温补系数：`{args.coeff.name}`（T0 = {tref:.4f} °C，各轴阶数 "
-        f"{'/'.join(str(int(o)) for o in orders)}）",
-        f"- 轴开关 enable = {''.join(str(int(e)) for e in enable)} "
-        "（1=温补，0=不补；不补的轴 raw 与 raw+TC 完全相同）",
-        f"- 配套标定：`{args.calib.name}`（ba / Ca / gb 与该温补配置配套，不可与其他配置混用）",
-        "- 场景前提：GNSS 1 Hz 修正、失锁 ≤ 600 s；因此关注 30~1000 s 的 Allan 行为，"
-        "数小时尺度仅作参考。",
-        "",
-        "## 1. 固定 τ 的 Allan 偏差（mg / deg/h）",
-        "",
-        "括号内为相对 raw 的变化率，负值=改善。",
+    report_lines = [
+        "# Allan 对比摘要", "",
+        f"- 原始数据：`{args.csv.name}`",
+        f"- 温补数据：`{args.tc_csv.name}`" if args.tc_csv else "- 温补数据：由温补系数计算",
+        f"- 样本数：{sample_count:,}；时长：{duration_h:.2f} h；采样率：{1.0 / period:.4f} Hz",
+        f"- 计算阶段：{', '.join(STAGE_LABELS[stage] for stage in selected_stages)}",
+        f"- 图片：`{figure_path.name}`（{width}×{height} px）", "",
+        "## 600 s Allan 偏差", "",
+        "| 轴 | 单位 | " + " | ".join(STAGE_LABELS[stage] for stage in selected_stages) + " |",
+        "|---|---|" + "---:|" * len(selected_stages),
     ]
     for row in tau_table:
-        lines.append(f"\n### {row['axis'].upper()}（{row['unit']}）\n")
-        lines.append("| τ (s) | raw | raw+TC | raw+TC+calib |")
-        lines.append("|---:|---:|---:|---:|")
-        for t in TAU_TARGETS:
-            r0 = row[f"raw_adev_{int(t)}s"]
-            r1 = row[f"raw+TC_adev_{int(t)}s"]
-            r2 = row[f"raw+TC+calib_adev_{int(t)}s"]
-            d1 = f" ({100*(r1/r0-1):+.1f}%)" if math.isfinite(r0) and r0 > 0 else ""
-            d2 = f" ({100*(r2/r0-1):+.1f}%)" if math.isfinite(r0) and r0 > 0 else ""
-            lines.append(f"| {int(t)} | {fmt(r0)} | {fmt(r1)}{d1} | {fmt(r2)}{d2} |")
-        b0 = row["raw_block600_std"]; b1 = row["raw+TC_block600_std"]; b2 = row["raw+TC+calib_block600_std"]
-        lines.append(f"\n600 s 块均值漂移 std：raw {fmt(b0)} → raw+TC {fmt(b1)}"
-                     f" → raw+TC+calib {fmt(b2)} {row['unit']}")
-        lines.append("")
+        report_lines.append(
+            f"| {row['axis'].upper()} | {row['unit']} | "
+            + " | ".join(f"{row[f'{stage}_adev_600s']:.4g}" for stage in selected_stages)
+            + " |")
+    (output_dir / "Allan对比摘要.md").write_text(
+        "\n".join(report_lines) + "\n", encoding="utf-8")
 
-    lines += [
-        "## 2. 随机误差辨识参数（自动幂律拟合）",
-        "",
-        "| stage | 轴 | ARW/VRW | BI | RRW | Rate Ramp |",
-        "|---|---|---:|---:|---:|---:|",
-    ]
-    for row in param_rows:
-        lines.append("| {stage} | {axis} | {w} {wu} | {b} {bu} | {r} {ru} | {p} {pu} |".format(
-            stage=row["stage"], axis=row["axis"].upper(),
-            w=fmt(row["arw_vrw"]), wu=row["arw_vrw_unit"],
-            b=fmt(row["bias_instability"]), bu=row["bias_instability_unit"],
-            r=fmt(row["rrw"]), ru=row["rrw_unit"],
-            p=fmt(row["rate_ramp"]), pu=row["rate_ramp_unit"]))
-    lines += [
-        "",
-        "## 3. 判读要点与局限",
-        "",
-        "- **Allan 静态指标 ≠ 失锁位置误差**：失锁误差还取决于姿态误差、初始状态与误差传播，"
-        "本报告只回答\"各温补方案在 30~1000 s 尺度的静态平滑度\"，不直接等于 600 s 失锁精度。",
-        "- GNSS 1 Hz 修正下，滤波器在线估计的是**温补+标定后的剩余零偏**；温补的意义是把"
-        "需要滤波器跟踪的零偏动态范围压小，因此重点看 raw+TC+calib 相对 raw 在 30~600 s 的变化。",
-        "- **raw+TC 与 raw+TC+calib 曲线基本重合属预期**：Allan 偏差计算本身先扣除均值，"
-        "而标定只是减常值零偏（陀螺 gb）加常数矩阵（Ca），不改变曲线形状——陀螺两方案完全重合，"
-        "加计仅因 Ca 交叉耦合有 <1% 差异。标定的作用体现在均值/零偏层面（ba/gb），不体现在 Allan 曲线上。",
-        "- **az 的权衡**：180~1000 s 改善 6~18%，3600 s 反而 +5~7%——3 阶模型针对的正是"
-        "GNSS 失锁 ≤600 s 工况关心的短中期区间，超长周期变差不构成否决理由。",
-        "- 所有数据为静态场景，无运动/振动激励，结论不外推到动态工况。",
-        "- 加计温补量近常数（24 位置 ΔT 仅 0.71 °C），其收益主要在长 τ；短 τ 由噪声主导，"
-        "三个方案在 30~60 s 处应基本重合，属预期。",
-        "- 自动幂律拟合受温度趋势污染的长 τ 区间影响，RRW/Ramp 数值仅作曲线候选。",
-        "",
-        "## 4. 输出文件",
-        "",
-        "- `allan_three_configs.png`：六轴 Allan 曲线，三方案叠加，虚线标出 30~3600 s 关注点。",
-        "- `allan_adev_at_tau.csv`：固定 τ 的 adev 与 600 s 块均值漂移 std。",
-        "- `allan_three_configs_params.csv`：三方案各自的 ARW/VRW、BI、RRW、Ramp。",
-        "- `allan_deviation.csv`：完整 Allan 曲线（SI 单位）。",
-    ]
-    (out / "温补配置Allan对比报告.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-    print(f"\noutputs in: {out}")
+    print(f"figure: {figure_path}")
+    print(f"outputs: {output_dir}")
     print("DONE")
 
 

@@ -197,6 +197,248 @@ end
 sgtitle(sprintf('原始域温补前后 (%d s 块均值, 各自去中位数)', cfg.blockSec));
 saveas(gcf, outFigCmp);
 
+%% ========================================================================
+%   温漂补偿前后对比图
+%   2×3:
+%       top    : Gx / Gy / Gz   [deg/s]
+%       bottom : Ax / Ay / Az   [mg]
+%   PPT figure size: 600 × 250 px
+% ========================================================================
+
+block = max(1, round(cfg.blockSec * 100));    % 100 Hz nominal sampling
+nb    = floor(N / block);
+
+tH = ((1:nb)' - 0.5) * cfg.blockSec / 3600;
+
+% Block mean
+bm = @(v) mean(reshape(v(1:nb*block), block, nb), 1)';
+
+% ======================= Color / style ================================
+% Okabe-Ito / SCI friendly colors
+cRaw = [0, 114, 178] / 255;       % blue
+cTC  = [213, 94, 0] / 255;        % vermilion / red-orange
+
+% Curve style
+rawLineStyle = '--';
+tcLineStyle  = '-';
+
+rawLineWidth = 1.15;
+tcLineWidth  = 1.50;
+
+% ======================= Font settings ===============================
+% 600 × 250 px is relatively compact, so avoid oversized fonts
+fontName       = 'Times New Roman';
+tickFontSize   = 8;
+labelFontSize  = 9;
+titleFontSize  = 9;
+legendFontSize = 8;
+
+% ======================= Unit conversion =============================
+% RAW / Ytc axis order:
+%   1 ax
+%   2 ay
+%   3 az
+%   4 gx
+%   5 gy
+%   6 gz
+%
+% Accelerometer:
+%   m/s^2 -> mg
+%
+% Gyroscope:
+%   deg/h -> deg/s
+
+accScale  = 1000 / 9.80665;
+gyroScale = 1 / 3600;
+
+% ======================= Figure =====================================
+figCmp = figure( ...
+    'Name', 'Temperature compensation comparison', ...
+    'Color', 'w', ...
+    'Units', 'pixels', ...
+    'Position', [100, 100, 600, 250]);
+
+tl = tiledlayout(figCmp, 2, 3, ...
+    'TileSpacing', 'compact', ...
+    'Padding', 'compact');
+
+% ====================================================================
+%                           TOP ROW: GYRO
+% ====================================================================
+
+gyroIdx   = [4 5 6];
+gyroTitle = {'G_x', 'G_y', 'G_z'};
+
+gyroHandles = gobjects(2,1);
+
+for j = 1:3
+
+    k = gyroIdx(j);
+
+    ax = nexttile(tl, j);
+    hold(ax, 'on');
+
+    % 600 s block means
+    mRaw = bm(RAW(:,k)) * gyroScale;     % deg/s
+    mTC  = bm(Ytc(:,k)) * gyroScale;     % deg/s
+
+    % Remove their own medians:
+    % focus on temporal low-frequency drift, not constant DC bias
+    mRaw = mRaw - median(mRaw);
+    mTC  = mTC  - median(mTC);
+
+    % RAW
+    h1 = plot(ax, tH, mRaw, ...
+        'LineStyle', rawLineStyle, ...
+        'Color', cRaw, ...
+        'LineWidth', rawLineWidth);
+
+    % Temperature compensated
+    h2 = plot(ax, tH, mTC, ...
+        'LineStyle', tcLineStyle, ...
+        'Color', cTC, ...
+        'LineWidth', tcLineWidth);
+
+    % Zero reference line
+    yline(ax, 0, ':', ...
+        'Color', [0.55 0.55 0.55], ...
+        'LineWidth', 0.6, ...
+        'HandleVisibility', 'off');
+
+    %% Axis style
+    xlim(ax, [0, max(tH)]);
+
+    box(ax, 'on');
+    grid(ax, 'off');
+
+    ax.FontName = fontName;
+    ax.FontSize = tickFontSize;
+    ax.LineWidth = 0.75;
+    ax.TickDir = 'in';
+    ax.TickLength = [0.018 0.018];
+
+    % Only first column has Y label
+    if j == 1
+        ylabel(ax, 'Gyro. (deg/s)', ...
+            'FontName', fontName, ...
+            'FontSize', labelFontSize);
+    end
+
+    % Top row does not show X label to reduce clutter
+    ax.XTickLabel = [];
+
+    % title(ax, gyroTitle{j}, ...
+    %     'Interpreter', 'tex', ...
+    %     'FontName', fontName, ...
+    %     'FontSize', titleFontSize, ...
+    %     'FontWeight', 'normal');
+
+    if j == 1
+        gyroHandles(1) = h1;
+        gyroHandles(2) = h2;
+    end
+end
+
+% ====================================================================
+%                       BOTTOM ROW: ACCELEROMETER
+% ====================================================================
+
+accIdx   = [1 2 3];
+accTitle = {'A_x', 'A_y', 'A_z'};
+
+for j = 1:3
+
+    k = accIdx(j);
+
+    ax = nexttile(tl, j + 3);
+    hold(ax, 'on');
+
+    % 600 s block means
+    mRaw = bm(RAW(:,k)) * accScale;      % mg
+    mTC  = bm(Ytc(:,k)) * accScale;      % mg
+
+    % Remove their own medians
+    mRaw = mRaw - median(mRaw);
+    mTC  = mTC  - median(mTC);
+
+    % RAW
+    plot(ax, tH, mRaw, ...
+        'LineStyle', rawLineStyle, ...
+        'Color', cRaw, ...
+        'LineWidth', rawLineWidth);
+
+    % Temperature compensated
+    plot(ax, tH, mTC, ...
+        'LineStyle', tcLineStyle, ...
+        'Color', cTC, ...
+        'LineWidth', tcLineWidth);
+
+    % Zero reference
+    yline(ax, 0, ':', ...
+        'Color', [0.55 0.55 0.55], ...
+        'LineWidth', 0.6, ...
+        'HandleVisibility', 'off');
+
+    %% Axis style
+    xlim(ax, [0, max(tH)]);
+
+    box(ax, 'on');
+    grid(ax, 'off');
+
+    ax.FontName = fontName;
+    ax.FontSize = tickFontSize;
+    ax.LineWidth = 0.75;
+    ax.TickDir = 'in';
+    ax.TickLength = [0.018 0.018];
+
+    xlabel(ax, 'Time (h)', ...
+        'FontName', fontName, ...
+        'FontSize', labelFontSize);
+
+    if j == 1
+        ylabel(ax, 'Acce. (mg)', ...
+            'FontName', fontName, ...
+            'FontSize', labelFontSize);
+    end
+
+    % title(ax, accTitle{j}, ...
+    %     'Interpreter', 'tex', ...
+    %     'FontName', fontName, ...
+    %     'FontSize', titleFontSize, ...
+    %     'FontWeight', 'normal');
+end
+
+% ======================= Shared legend ===============================
+lgd = legend(gyroHandles, ...
+    {'Raw', 'Temperature compensated'}, ...
+    'Orientation', 'horizontal', ...
+    'NumColumns', 2, ...
+    'Box', 'off', ...
+    'FontName', fontName, ...
+    'FontSize', legendFontSize);
+
+% Put legend above all 6 subplots
+lgd.Layout.Tile = 'north';
+
+% ======================= Optional overall title ======================
+% 600×250 is compact; PPT already has a page title, so I recommend
+% NOT using sgtitle here.
+%
+% sgtitle(tl, ...
+%     sprintf('Temperature compensation (%d s block mean)', cfg.blockSec), ...
+%     'FontName', fontName, ...
+%     'FontSize', 10, ...
+%     'FontWeight', 'normal');
+
+% ======================= Export ======================================
+set(figCmp, 'PaperPositionMode', 'auto');
+
+% PNG for PPT
+exportgraphics(figCmp, outFigCmp, ...
+    'Resolution', 300, ...
+    'BackgroundColor', 'white');
+
+fprintf('Temperature comparison figure saved:\n%s\n', outFigCmp);
 %% ---------------- 温度模型拟合效果预览图 ----------------
 figure('Name','原始域变阶温度模型拟合','Position',[80 80 1200 700]);
 for k = 1:nAx

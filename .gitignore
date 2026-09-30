@@ -23,9 +23,31 @@ mx.scratch/
 /data/decoded/*
 !/data/decoded/.gitkeep
 !/data/decoded/20260923104556_电动车2/
-/data/calib24/[0-9][0-9].csv
+# Publish selected 21 h scripts/results, not the multi-GB raw recordings.
+!/data/decoded/20260926005735/
+/data/decoded/20260926005735/*
+!/data/decoded/20260926005735/README.md
+!/data/decoded/20260926005735/plot_temp_drift_21h.m
+!/data/decoded/20260926005735/fig_raw_temp_fit.png
+!/data/decoded/20260926005735/fig_raw_tempcomp_compare.png
+!/data/decoded/20260926005735/figs/
+!/data/decoded/20260926005735/allan_compare_tc_configs/
+!/data/decoded/20260926005735/allan_raw_tc/
+!/data/decoded/20260926005735/gm_autocorrelation/
+!/data/decoded/20260926005735/gm_validation/
+# The bounded 24-position calibration input dataset is published.
 /data/allan_results/*
 !/data/allan_results/.gitkeep
+!/data/allan_results/README.md
+!/data/allan_results/imu_noise/
+!/data/allan_results/mpu_21.1h_20260930/
+/data/turn_on_bias/*
+!/data/turn_on_bias/README.md
+!/data/turn_on_bias/20260930_3run_pilot/
+/data/turn_on_bias/20260930_3run_pilot/*
+!/data/turn_on_bias/20260930_3run_pilot/analysis/
+!/data/turn_on_bias/20260930_3run_pilot/calibration/
+!/data/turn_on_bias/20260930_3run_pilot/manifest.json
 /host/imu_realtime_*.csv
 /host/map_key.txt
 *.key
@@ -47,6 +69,7 @@ Thumbs.db
 /参数.docx
 /fusion/self_aim_config copy.json
 *.bak_*
+*.asv
 
 # WorkBuddy project data (memory, temp scripts) — never commit
 .workbuddy/
