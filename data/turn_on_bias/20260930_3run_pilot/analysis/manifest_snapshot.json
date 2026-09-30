@@ -1,0 +1,573 @@
+{
+  "schema_version": 1,
+  "experiment_id": "20260930_3run_pilot_c3266450",
+  "mode": "pi-reboot-continuous-imu",
+  "created_at": "2026-09-30T14:36:59.4287159+08:00",
+  "updated_at": "2026-09-30T14:46:47.8418859+08:00",
+  "status": "complete",
+  "settings": {
+    "runs": 3,
+    "warmup_seconds": 30,
+    "window_seconds": 120,
+    "remote_root": "/home/lmy/pi5-mpu6050-f9p-logger",
+    "ssh_host": "pi5-ics"
+  },
+  "calibration_hashes": [
+    {
+      "Path": "C:\\Users\\12597\\Desktop\\lowcost\\stm32-mpu6050-f9p-navigation\\data\\turn_on_bias\\20260930_3run_pilot\\calibration\\calib24_result.mat",
+      "Hash": "FBA49434A04825EB0402FB25D3D52B3AA9D9FF44AA3E533E20D16F47AF058C5A"
+    },
+    {
+      "Path": "C:\\Users\\12597\\Desktop\\lowcost\\stm32-mpu6050-f9p-navigation\\data\\turn_on_bias\\20260930_3run_pilot\\calibration\\temp_coeffs_raw.csv",
+      "Hash": "23A3AC1AF949AE8152672133CB11126F81B6ADB657A62E0B9F6E1D97867888FD"
+    },
+    {
+      "Path": "C:\\Users\\12597\\Desktop\\lowcost\\stm32-mpu6050-f9p-navigation\\data\\turn_on_bias\\20260930_3run_pilot\\calibration\\temp_coeffs_raw.mat",
+      "Hash": "497D66C99FD95316928A7046A96019E44B96173416DA88A8655DD4E3C088E090"
+    }
+  ],
+  "preflight": {
+    "boot_id": "7f022e80-0bea-4a0e-b9f2-b0f4102ab81c",
+    "uptime_seconds": 2056.79,
+    "service_active": true,
+    "protocol_version": 3,
+    "recording": false,
+    "session": null,
+    "recording_error": null,
+    "state_age_seconds": 0.377310302734375,
+    "imu_age_seconds": 0.377310302734375,
+    "imu": {
+      "sample": 206882,
+      "gps_week": 2438,
+      "gps_tow_us": 283039056965,
+      "time_valid": 1,
+      "timer_us": 2069781047,
+      "ax_m_s2": 0.14724340209960937,
+      "ay_m_s2": 0.062249243164062495,
+      "az_m_s2": 10.359710583496094,
+      "temp_deg_c": 28.144705882352945,
+      "gx_deg_s": -9.03053435114504,
+      "gy_deg_s": -0.5114503816793894,
+      "gz_deg_s": 1.1603053435114505
+    },
+    "counts": {
+      "imu": 205098,
+      "gnss": 2052,
+      "rawx": 67649,
+      "sat": 87279,
+      "lost": 0,
+      "invalid": 993,
+      "sync_diag": {
+        "sample_count": 206877,
+        "interrupt_count": 206878,
+        "interrupt_overruns": 0,
+        "cc2_overcapture": 0,
+        "dt_gap_count": 1,
+        "i2c_errors": 0,
+        "pps": 2070,
+        "time_state": 1,
+        "holdover_age_ms": 0,
+        "d_interrupt_overruns": 0,
+        "d_cc2_overcapture": 0,
+        "d_dt_gap_count": 0,
+        "d_i2c_errors": 0,
+        "backlog": 1
+      }
+    },
+    "ubx": {
+      "port": "/dev/ttyAMA2",
+      "baud": 115200,
+      "connected": true,
+      "recording": false,
+      "received_bytes": 3533925,
+      "recorded_bytes": 0,
+      "last_rx_unix_ms": 1790750220684,
+      "error": null
+    },
+    "free_bytes": 19073060864,
+    "reboot_permitted": true,
+    "throttled": "throttled=0x0",
+    "record_control_exists": false,
+    "capture_sha256": "900dcf32dbc5a23908f796717bf0200022492cec6f6584d40d9cf78f54ac3514",
+    "service_working_directory": "/home/lmy/pi5-mpu6050-f9p-logger",
+    "service_exec_start": "{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 -u tools/capture_serial.py /dev/ttyAMA0 --baud 460800 --hours 0 --output-dir /home/lmy/pi5-mpu6050-f9p-logger/data/decoded --save imu gnss rawx --record-control /run/gnss-imu/recording.enabled --state-file /run/gnss-imu/live.json --ntrip-control /run/gnss-imu/ntrip.json --ubx-port /dev/ttyAMA2 --ubx-baud 115200 ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }",
+    "lock_owner": null
+  },
+  "runs": [
+    {
+      "index": 1,
+      "attempt": 1,
+      "status": "downloaded",
+      "boot_id_before": "7f022e80-0bea-4a0e-b9f2-b0f4102ab81c",
+      "boot_id_after": "62701f98-26b7-48ae-aa59-d01794dc7403",
+      "power_cycle_verified": false,
+      "remote_session": "20260930143737",
+      "local_session": "runs/run_001_attempt_01",
+      "start_snapshot": {
+        "boot_id": "62701f98-26b7-48ae-aa59-d01794dc7403",
+        "uptime_seconds": 18.19,
+        "service_active": true,
+        "protocol_version": 3,
+        "recording": true,
+        "session": "20260930143737",
+        "recording_error": null,
+        "state_age_seconds": 0.253488525390625,
+        "imu_age_seconds": 0.253488525390625,
+        "imu": {
+          "sample": 210481,
+          "gps_week": 2438,
+          "gps_tow_us": 283075061127,
+          "time_valid": 1,
+          "timer_us": 2105787759,
+          "ax_m_s2": 0.08978256225585937,
+          "ay_m_s2": 0.06105214233398437,
+          "az_m_s2": 10.334571466064453,
+          "temp_deg_c": 28.18,
+          "gx_deg_s": -9.053435114503817,
+          "gy_deg_s": -0.5038167938931298,
+          "gz_deg_s": 1.1374045801526718
+        },
+        "counts": {
+          "imu": 1358,
+          "gnss": 14,
+          "rawx": 424,
+          "sat": 641,
+          "lost": 0,
+          "invalid": 0,
+          "sync_diag": {
+            "sample_count": 210475,
+            "interrupt_count": 210476,
+            "interrupt_overruns": 0,
+            "cc2_overcapture": 0,
+            "dt_gap_count": 1,
+            "i2c_errors": 0,
+            "pps": 2106,
+            "time_state": 1,
+            "holdover_age_ms": 0,
+            "d_interrupt_overruns": 0,
+            "d_cc2_overcapture": 0,
+            "d_dt_gap_count": 0,
+            "d_i2c_errors": 0,
+            "backlog": 1
+          }
+        },
+        "ubx": {
+          "port": "/dev/ttyAMA2",
+          "baud": 115200,
+          "connected": true,
+          "recording": true,
+          "received_bytes": 23376,
+          "recorded_bytes": 0,
+          "last_rx_unix_ms": 1790750256831,
+          "error": null
+        }
+      },
+      "end_snapshot": {
+        "boot_id": "62701f98-26b7-48ae-aa59-d01794dc7403",
+        "uptime_seconds": 177.96,
+        "service_active": true,
+        "protocol_version": 3,
+        "recording": false,
+        "session": null,
+        "recording_error": null,
+        "state_age_seconds": 0.143318359375,
+        "imu_age_seconds": 0.144318359375,
+        "imu": {
+          "sample": 226475,
+          "gps_week": 2438,
+          "gps_tow_us": 283235064323,
+          "time_valid": 1,
+          "timer_us": 2265802287,
+          "ax_m_s2": 0.10773907470703124,
+          "ay_m_s2": 0.07062894897460938,
+          "az_m_s2": 10.342951171874999,
+          "temp_deg_c": 28.277058823529412,
+          "gx_deg_s": -9.045801526717558,
+          "gy_deg_s": -0.5343511450381679,
+          "gz_deg_s": 1.16793893129771
+        },
+        "counts": {
+          "imu": 17352,
+          "gnss": 174,
+          "rawx": 5607,
+          "sat": 7997,
+          "lost": 0,
+          "invalid": 12,
+          "sync_diag": {
+            "sample_count": 226469,
+            "interrupt_count": 226470,
+            "interrupt_overruns": 0,
+            "cc2_overcapture": 0,
+            "dt_gap_count": 1,
+            "i2c_errors": 0,
+            "pps": 2266,
+            "time_state": 1,
+            "holdover_age_ms": 0,
+            "d_interrupt_overruns": 0,
+            "d_cc2_overcapture": 0,
+            "d_dt_gap_count": 0,
+            "d_i2c_errors": 0,
+            "backlog": 1
+          }
+        },
+        "ubx": {
+          "port": "/dev/ttyAMA2",
+          "baud": 115200,
+          "connected": true,
+          "recording": false,
+          "received_bytes": 301896,
+          "recorded_bytes": 278520,
+          "last_rx_unix_ms": 1790750416713,
+          "error": null
+        }
+      },
+      "capture_started_at": "2026-09-30T14:37:37.3420811+08:00",
+      "capture_finished_at": "2026-09-30T14:40:17.2272466+08:00",
+      "files": [
+        {
+          "name": "imu.csv",
+          "size": 3582970,
+          "sha256": "e69b07bbd11a822750107d99831f9188e4ed3e0bbaf55b24a48589d2f0fc4ea1"
+        },
+        {
+          "name": "gnss.csv",
+          "size": 19787,
+          "sha256": "8d76db613c6ca75bd47eef44894b9f76a0fb4d8b0dc89ac9d2dc73764832aa60"
+        },
+        {
+          "name": "rawx.csv",
+          "size": 783344,
+          "sha256": "f76d631d9fa5b39f3763a93607fd692ffaa9684f65c372c35f3863a7fd2f1aef"
+        },
+        {
+          "name": "sync.csv",
+          "size": 8947,
+          "sha256": "b2f52cae3a82f91ecd6abfe01dd5e43098a0cd4b18f853d643110a48d790e15b"
+        },
+        {
+          "name": "f9p.ubx",
+          "size": 278520,
+          "sha256": "73806f57e7c07a4b9d498e837bccaebb829118fd23d2419296cea55b6d73dc10"
+        }
+      ],
+      "error": null
+    },
+    {
+      "index": 2,
+      "attempt": 1,
+      "status": "downloaded",
+      "boot_id_before": "62701f98-26b7-48ae-aa59-d01794dc7403",
+      "boot_id_after": "9cd24f54-014b-4340-b903-1bec371c18cf",
+      "power_cycle_verified": false,
+      "remote_session": "20260930144050",
+      "local_session": "runs/run_002_attempt_01",
+      "start_snapshot": {
+        "boot_id": "9cd24f54-014b-4340-b903-1bec371c18cf",
+        "uptime_seconds": 18.05,
+        "service_active": true,
+        "protocol_version": 3,
+        "recording": true,
+        "session": "20260930144050",
+        "recording_error": null,
+        "state_age_seconds": 0.266644775390625,
+        "imu_age_seconds": 0.269644775390625,
+        "imu": {
+          "sample": 229833,
+          "gps_week": 2438,
+          "gps_tow_us": 283268657679,
+          "time_valid": 1,
+          "timer_us": 2299397979,
+          "ax_m_s2": 0.12449848632812499,
+          "ay_m_s2": 0.051475335693359374,
+          "az_m_s2": 10.319009155273436,
+          "temp_deg_c": 28.31235294117647,
+          "gx_deg_s": -9.038167938931299,
+          "gy_deg_s": -0.5419847328244275,
+          "gz_deg_s": 1.1984732824427482
+        },
+        "counts": {
+          "imu": 1355,
+          "gnss": 14,
+          "rawx": 437,
+          "sat": 604,
+          "lost": 0,
+          "invalid": 0,
+          "sync_diag": {
+            "sample_count": 229768,
+            "interrupt_count": 229769,
+            "interrupt_overruns": 0,
+            "cc2_overcapture": 0,
+            "dt_gap_count": 1,
+            "i2c_errors": 0,
+            "pps": 2299,
+            "time_state": 1,
+            "holdover_age_ms": 0,
+            "d_interrupt_overruns": 0,
+            "d_cc2_overcapture": 0,
+            "d_dt_gap_count": 0,
+            "d_i2c_errors": 0,
+            "backlog": 1
+          }
+        },
+        "ubx": {
+          "port": "/dev/ttyAMA2",
+          "baud": 115200,
+          "connected": true,
+          "recording": true,
+          "received_bytes": 24336,
+          "recorded_bytes": 0,
+          "last_rx_unix_ms": 1790750450879,
+          "error": null
+        }
+      },
+      "end_snapshot": {
+        "boot_id": "9cd24f54-014b-4340-b903-1bec371c18cf",
+        "uptime_seconds": 177.68,
+        "service_active": true,
+        "protocol_version": 3,
+        "recording": false,
+        "session": null,
+        "recording_error": null,
+        "state_age_seconds": 0.2280302734375,
+        "imu_age_seconds": 0.2320302734375,
+        "imu": {
+          "sample": 245816,
+          "gps_week": 2438,
+          "gps_tow_us": 283428551221,
+          "time_valid": 1,
+          "timer_us": 2459302847,
+          "ax_m_s2": 0.12689268798828124,
+          "ay_m_s2": 0.08499415893554688,
+          "az_m_s2": 10.36809028930664,
+          "temp_deg_c": 28.374117647058824,
+          "gx_deg_s": -9.00763358778626,
+          "gy_deg_s": -0.48091603053435117,
+          "gz_deg_s": 1.1755725190839694
+        },
+        "counts": {
+          "imu": 17338,
+          "gnss": 174,
+          "rawx": 5858,
+          "sat": 7829,
+          "lost": 0,
+          "invalid": 0,
+          "sync_diag": {
+            "sample_count": 245761,
+            "interrupt_count": 245762,
+            "interrupt_overruns": 0,
+            "cc2_overcapture": 0,
+            "dt_gap_count": 1,
+            "i2c_errors": 0,
+            "pps": 2459,
+            "time_state": 1,
+            "holdover_age_ms": 0,
+            "d_interrupt_overruns": 0,
+            "d_cc2_overcapture": 0,
+            "d_dt_gap_count": 0,
+            "d_i2c_errors": 0,
+            "backlog": 1
+          }
+        },
+        "ubx": {
+          "port": "/dev/ttyAMA2",
+          "baud": 115200,
+          "connected": true,
+          "recording": false,
+          "received_bytes": 307837,
+          "recorded_bytes": 283389,
+          "last_rx_unix_ms": 1790750610555,
+          "error": null
+        }
+      },
+      "capture_started_at": "2026-09-30T14:40:50.9449321+08:00",
+      "capture_finished_at": "2026-09-30T14:43:30.8015257+08:00",
+      "files": [
+        {
+          "name": "imu.csv",
+          "size": 3593348,
+          "sha256": "0bdb4d510e863b18443d9ebafb9b966d91d1b6c3914eab172e805de4d76eaf8b"
+        },
+        {
+          "name": "gnss.csv",
+          "size": 19572,
+          "sha256": "80fcf2679460499a67eefdaf6a4ee10bb7d15552f140a1bcdb6f17274b228502"
+        },
+        {
+          "name": "rawx.csv",
+          "size": 819887,
+          "sha256": "86a354ee179ea99b0abc8f128e2d3480f9a6c53615973c5a4d23b473e1dcc0d4"
+        },
+        {
+          "name": "sync.csv",
+          "size": 9002,
+          "sha256": "c828c0e2c75cb5812c3a3d88e5f8b4f4c202e07bb4c5da63a9eb4a950f934fc5"
+        },
+        {
+          "name": "f9p.ubx",
+          "size": 283389,
+          "sha256": "f6513669b73e18c88605aff3339062cdf77652296fb6b3336f1eb134c0e24206"
+        }
+      ],
+      "error": null
+    },
+    {
+      "index": 3,
+      "attempt": 1,
+      "status": "downloaded",
+      "boot_id_before": "9cd24f54-014b-4340-b903-1bec371c18cf",
+      "boot_id_after": "1c881d90-3e22-4703-9a95-3933473aa4d0",
+      "power_cycle_verified": false,
+      "remote_session": "20260930144404",
+      "local_session": "runs/run_003_attempt_01",
+      "start_snapshot": {
+        "boot_id": "1c881d90-3e22-4703-9a95-3933473aa4d0",
+        "uptime_seconds": 18.25,
+        "service_active": true,
+        "protocol_version": 3,
+        "recording": true,
+        "session": "20260930144404",
+        "recording_error": null,
+        "state_age_seconds": 0.2694951171875,
+        "imu_age_seconds": 0.2704951171875,
+        "imu": {
+          "sample": 249184,
+          "gps_week": 2438,
+          "gps_tow_us": 283462244629,
+          "time_valid": 1,
+          "timer_us": 2492998661,
+          "ax_m_s2": 0.1292868896484375,
+          "ay_m_s2": 0.07541735229492187,
+          "az_m_s2": 10.342951171874999,
+          "temp_deg_c": 28.415294117647058,
+          "gx_deg_s": -9.022900763358779,
+          "gy_deg_s": -0.549618320610687,
+          "gz_deg_s": 1.1297709923664123
+        },
+        "counts": {
+          "imu": 1401,
+          "gnss": 14,
+          "rawx": 492,
+          "sat": 630,
+          "lost": 0,
+          "invalid": 0,
+          "sync_diag": {
+            "sample_count": 249160,
+            "interrupt_count": 249161,
+            "interrupt_overruns": 0,
+            "cc2_overcapture": 0,
+            "dt_gap_count": 1,
+            "i2c_errors": 0,
+            "pps": 2493,
+            "time_state": 1,
+            "holdover_age_ms": 0,
+            "d_interrupt_overruns": 0,
+            "d_cc2_overcapture": 0,
+            "d_dt_gap_count": 0,
+            "d_i2c_errors": 0,
+            "backlog": 1
+          }
+        },
+        "ubx": {
+          "port": "/dev/ttyAMA2",
+          "baud": 115200,
+          "connected": true,
+          "recording": true,
+          "received_bytes": 25432,
+          "recorded_bytes": 0,
+          "last_rx_unix_ms": 1790750644070,
+          "error": null
+        }
+      },
+      "end_snapshot": {
+        "boot_id": "1c881d90-3e22-4703-9a95-3933473aa4d0",
+        "uptime_seconds": 178.25,
+        "service_active": true,
+        "protocol_version": 3,
+        "recording": false,
+        "session": null,
+        "recording_error": null,
+        "state_age_seconds": 0.28770751953125,
+        "imu_age_seconds": 0.28770751953125,
+        "imu": {
+          "sample": 265176,
+          "gps_week": 2438,
+          "gps_tow_us": 283622228591,
+          "time_valid": 1,
+          "timer_us": 2652993941,
+          "ax_m_s2": 0.1388636962890625,
+          "ay_m_s2": 0.062249243164062495,
+          "az_m_s2": 10.320206256103514,
+          "temp_deg_c": 28.468235294117648,
+          "gx_deg_s": -9.03053435114504,
+          "gy_deg_s": -0.5190839694656488,
+          "gz_deg_s": 1.1526717557251909
+        },
+        "counts": {
+          "imu": 17393,
+          "gnss": 174,
+          "rawx": 5988,
+          "sat": 7822,
+          "lost": 0,
+          "invalid": 20,
+          "sync_diag": {
+            "sample_count": 265154,
+            "interrupt_count": 265155,
+            "interrupt_overruns": 0,
+            "cc2_overcapture": 0,
+            "dt_gap_count": 1,
+            "i2c_errors": 0,
+            "pps": 2653,
+            "time_state": 1,
+            "holdover_age_ms": 0,
+            "d_interrupt_overruns": 0,
+            "d_cc2_overcapture": 0,
+            "d_dt_gap_count": 0,
+            "d_i2c_errors": 0,
+            "backlog": 1
+          }
+        },
+        "ubx": {
+          "port": "/dev/ttyAMA2",
+          "baud": 115200,
+          "connected": true,
+          "recording": false,
+          "received_bytes": 312048,
+          "recorded_bytes": 286616,
+          "last_rx_unix_ms": 1790750804059,
+          "error": null
+        }
+      },
+      "capture_started_at": "2026-09-30T14:44:04.5316702+08:00",
+      "capture_finished_at": "2026-09-30T14:46:44.5339427+08:00",
+      "files": [
+        {
+          "name": "imu.csv",
+          "size": 3579267,
+          "sha256": "ade21db93b1c192c4b92b2093c49496153ef5b23b2889bd5412a6f86554fd327"
+        },
+        {
+          "name": "gnss.csv",
+          "size": 19731,
+          "sha256": "59e223d846511bbeb9ff37e9000088ec2d8e61808f3fe13c3044539ea145dee1"
+        },
+        {
+          "name": "rawx.csv",
+          "size": 832799,
+          "sha256": "7b6922850be12f94c5de562fb4ef00b8d169d33baa20753880dfb89cb6ab5327"
+        },
+        {
+          "name": "sync.csv",
+          "size": 9002,
+          "sha256": "7e9b9770a3b23400b476d5a9d3bed2628e2dfbbcdd7fe24ec6e4a4b137217da1"
+        },
+        {
+          "name": "f9p.ubx",
+          "size": 286616,
+          "sha256": "6a89763b1fab2fd858b725676ce218db1fa8fbe0454859561ea5c9a1c8eb198e"
+        }
+      ],
+      "error": null
+    }
+  ],
+  "error": null
+}
