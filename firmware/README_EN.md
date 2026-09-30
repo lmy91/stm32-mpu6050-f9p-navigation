@@ -1,5 +1,19 @@
 # MPU6050/F9P Navigation Firmware
 
+## File map and snapshot scope (2026-09-30)
+
+| File | Purpose/use |
+| --- | --- |
+| `Src/main.c` | Acquisition, timestamps, UBX parsing and RTCM bridge |
+| `Src/startup_stm32f103xx.S` | Reset and interrupt vectors |
+| `Src/syscall.c`, `Src/sysmem.c` | Bare-metal runtime interfaces |
+| `CMakeLists.txt`, `CMakePresets.json`, `cmake/` | Build/preset/toolchain definitions; use commands below |
+| `stm32f103x8_flash.ld` | Flash/RAM link layout |
+| `build/` | Rebuildable compiler output; excluded from Git |
+
+No firmware/protocol changes in this organization update. GM and KML are [offline tools](../tools/README_EN.md) and [replay](../data/decoded/20260923104556_电动车2/README.md) features, not MCU configuration.
+
+
 [Project home](../README_EN.md) | [中文](README.md) | English
 
 This directory contains STM32F103C8T6 firmware for synchronized MPU6050/ZED-F9P acquisition. TIM2_CH1 captures the F9P time pulse on PA0 and TIM2_CH2 captures MPU6050 DATA_RDY on PA1 in the same 1 MHz timer domain. USART2 receives UBX while USART1 emits GPS-timestamped IMU, GNSS, and sky-view records at 460800 bit/s.
@@ -36,7 +50,7 @@ This directory contains STM32F103C8T6 firmware for synchronized MPU6050/ZED-F9P 
 | ST-LINK SWDIO | PA13/SWDIO |
 | ST-LINK SWCLK | PA14/SWCLK |
 | ST-LINK GND | GND |
-| ST-LINK 3.3V | 3.3V |
+| ST-LINK 3.3V | Only for sole-source ST-LINK power; disconnect with external/Pi power |
 
 Keep BOOT0 low and use a common ground. USB-TTL TX must connect to PA10 for RTCM injection. Avoid feeding the board VCC from multiple power sources.
 

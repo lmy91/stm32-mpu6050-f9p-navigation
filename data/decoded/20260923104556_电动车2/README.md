@@ -1,5 +1,41 @@
 # 电动车采集会话完整示例
 
+## 当前运行入口（2026-09-30）
+
+本目录保留原始完整示例和既有实验资产。本版更新当前test并归档其他实验，后者不自动跟随test更新。
+
+| 文件/目录 | 目的与使用限制 |
+| --- | --- |
+| `test.m` | 当前18状态PSINS回放：温补→标定，读取0930 Allan白噪声和自相关GM；实际dt传播、姿态映射Q、GNSS/ZUPT反馈，自动输出1 Hz KML |
+| `test_bias_random_walk.m` | 既有RW版本，Allan RRW设过程噪声；未同步当前test全部实际dt/Q/KML改动 |
+| `compare_bias_models.m` | 历史GM/RW留出实验，GM仍来自Allan BI/平台；留出120～180、300～360、420～480秒GNSS，不是当前自相关GM的受控比较 |
+| `compare_drift_time_windows.m` | 静止纯INS的1/10/30/60/180秒窗口误差，三种补偿层级 |
+| `compare_acc_calibration_static_ins.m` | 原始/温补/温补标定三路静止纯INS对照，非动态精度 |
+| `bias_model_comparison.mat`、`bias_model_comparison_summary.csv`、`figs_bias_model_comparison/` | 历史GM/RW实验的完整结果、指标和三张图 |
+| `static_ins_drift_windows.mat`、`static_ins_drift_windows_summary.csv` | 窗口实验数据与摘要，对应fig_windows图 |
+| `figs/` | 当前动态诊断、IEEE轨迹/速度/姿态/零偏、静止和窗口图，以前缀区分 |
+| `figs_bias_random_walk/` | 独立RW回放图，不覆盖当前test图 |
+| `kml/combined_navigation_1hz.kml` | 天线端WGS84轨迹，619个1 Hz点，默认贴地；Google Earth直接打开 |
+
+运行依赖已上传：`data/calib24/`温补/标定MAT、
+`data/allan_results/mpu_21.1h_20260930/allan_parameters.csv`、
+`data/decoded/20260926005735/gm_autocorrelation/gm_parameters.csv`。
+路径按仓库定位，不要求21 h原始CSV。GM仍为候选值，见 [验证说明](../../../tools/GM_VALIDATION.md)。
+P阵初始eb/db与GM过程参数不同；连续通电试跑不能作为正式上电重复性db。
+
+在仓库根目录MATLAB，先安装并初始化外部PSINS，再运行：
+
+```matlab
+which glvs
+which insupdate
+run(fullfile('data','decoded','20260923104556_电动车2','test.m'));
+```
+
+其余脚本替换最后一行文件名即可。脚本会clear/close并覆盖同名图和结果。
+KML由连续传播日志按整数秒插值，不外推、不仅抽取反馈点，不做GCJ-02转换。
+按海拔显示时将test顶部 `kml_altitude_mode='absolute'`，默认贴地但仍保留高度。
+原始示例和KML包含实际道路位置；没有独立参考轨迹时，不将与已融合GNSS一致解释为绝对精度。
+
 该目录保存 2026-09-23 的一组电动车实测会话，用于复现数据解码、松组合实验，以及静止区间的温补与 24 位置标定对照。原始记录与分析产物一并保留；两个 `*.bak_20260929` 文件是过期代码备份，不属于示例。
 
 ## 文件说明
@@ -16,11 +52,11 @@
 | `compare_acc_calibration_static_ins.m` | 从本会话静止区间做三路纯 INS 对照 |
 | `static_ins_acc_cal_summary.csv` | 三路静止传播汇总指标 |
 | `static_ins_acc_cal_compare.mat` | 完整中间变量和时序结果 |
-| `figs/` | 动态松组合 8 张图、静止三路误差对比 6 张 IEEE 风格图 |
+| `figs/` | 动态诊断与IEEE图、静止三路对比及时间窗口图 |
 
 ## 参数依赖与运行方式
 
-两个 MATLAB 脚本从仓库的 `data/calib24/` 读取：
+本目录 MATLAB 实验从仓库的 `data/calib24/` 读取：
 
 - `temp_coeffs_raw.mat`：当前有效轴为 az、gx、gy，阶数为 3、5、5；
 - `calib24_result_tempcomp_azgxgy.mat`：与上述温补矩阵绑定的 24 位置标定结果。

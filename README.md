@@ -1,8 +1,26 @@
 # STM32 MPU6050/F9P 组合导航实验系统
 
+## 2026-09-30 整理版：入口与复现范围
+
+| 目录/入口 | 文件目的 | 使用方法 |
+| --- | --- | --- |
+| [firmware/](firmware/README.md) | STM32同步采集、F9P配置、RTCM转发 | CMake构建，CubeProgrammer烧录 |
+| [host/](host/README.md) | Qt显示、保存、NTRIP及实时算法入口 | `python host/imu_serial_qt.py` |
+| [fusion/](fusion/README.md) | Python实时对准和15状态松组合 | 通过Qt启动，参数在 `self_aim_config.json` |
+| [tools/](tools/README.md) | 质检、温补/标定、Allan、GM、重复性和KML | 按工具说明选择Python/MATLAB入口 |
+| [data/](data/README.md) | 发布的数据、冻结参数、结果索引 | 电动车数据可回放；长时原始记录需另行补齐 |
+| [电动车test](data/decoded/20260923104556_电动车2/README.md) | MATLAB/PSINS回放和静态对照 | 配置外部PSINS后运行 `test.m`，自动输出1 Hz KML |
+| [docs/](docs/README.md) | 接线、同步、标定流程及限制 | 先读 [当前版本指南](docs/版本整理与使用指南_20260930.md) |
+| [raspberry_pi5/](raspberry_pi5/README.md) | 历史/开发参考 | 正式部署使用独立Pi仓库 |
+
+本版补齐test的Allan/GM参数、GM验证结果、24位置输入和实验图表。离线MATLAB已使用温补与标定；实时Python仍使用自身JSON配置，不自动读取这些离线参数。本次整理不修改固件或实时滤波器。
+GM参数仍是候选工程模型，拟合成功不等于30～600秒尺度或独立记录验证通过。历史GM/RW比较脚本也不等同于最新版test。
+21 h和独立长记录原始文件、全速率温补CSV、密钥、缓存和自动备份继续留在本地，未删除。
+
+
 [中文](README.md) | [English](README_EN.md)
 
-最新离线标定流程：原始 21h 数据逐轴多阶选阶与拟合 → 24 位置逐样本温补后标定 → 三方案 Allan 对比。具体命令、参数约定与验证结果见 [温补标定 SOP](docs/温补标定SOP.md) 和 [IMU 温度补偿使用说明](docs/IMU温度补偿使用说明.md)。当前离线参数尚未自动接入在线组合导航。
+最新离线流程为温补拟合 → 逐样本温补后24位置标定 → Allan对比 → GM自相关辨识及验证。命令与参数契约见 [温补标定SOP](docs/温补标定SOP.md) 和 [IMU温度补偿说明](docs/IMU温度补偿使用说明.md)。MATLAB回放已接入离线参数，实时Python不自动同步。
 
 电动车采集会话 `data/decoded/20260923104556_电动车2/` 作为完整示例数据保留，包含原始 IMU/GNSS/RAWX/UBX/RTKLIB 文件、组合导航实验脚本，以及静止区间三方案纯惯导对比结果。示例边界和复现入口见该目录的 `README.md`。
 

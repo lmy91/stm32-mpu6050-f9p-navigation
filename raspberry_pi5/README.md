@@ -1,5 +1,23 @@
 # 树莓派5 + STM32 + MPU6050/F9P 完整接线
 
+## 当前用途与文件索引（2026-09-30）
+
+本目录只保留开发/历史参考。生产安装、升级和维护使用 [独立Pi仓库](https://github.com/lmy91/pi5-mpu6050-f9p-logger)，按 [升级SOP](../docs/RASPBERRY_PI_GIT_UPDATE_SOP.md) 操作。本次上传分析文件和README不授权重启设备、不改变生产服务。
+
+| 文件/目录 | 目的/使用 |
+| --- | --- |
+| `LOGGER_SERVICE.md`、`systemd/` | 历史服务安装与启动说明；生产以独立仓库为准 |
+| `REMOTE_CONNECTION.md` | 网络、SSH及串口验证说明 |
+| `LIVE_DASHBOARD.md`、`live_dashboard.py`、`live_dashboard/` | 看板说明、HTTP入口和页面资源 |
+| `ntrip_client.py`、`base_station_ctl.py` | 同一串口所有者内的差分连接与控制 |
+| `gnss_time_sync.py` | GNSS校时参考实现 |
+| `record_start.sh`、`record_stop.sh`、`watch_logger_status.sh` | 保存开关与状态查看 |
+| `clear_logger_data.sh` | 数据清理脚本，有删除风险，非更新必需步骤 |
+| `test_*.py` | 本地参考实现的自动测试，不是设备实测验收 |
+
+采集后把CSV复制到PC，由 [tools](../tools/README.md) 分析；MATLAB test的GM参数和KML不会自动同步到Pi。
+
+
 本目录记录已经上电验证成功的树莓派5采集接线。树莓派替代原来的
 USB-TTL和ST-Link供电，STM32继续负责IMU/GNSS硬件时间同步、协议v3输出
 以及RTCM转发。

@@ -1,5 +1,22 @@
 # MPU6050/F9P 组合导航 Qt 上位机
 
+本次离线回归中host共68项，66项通过，2项失败：旧测试期望只生成选择的CSV，而当前实现还始终生成sync.csv。测试与现有记录契约不一致；本次保留并注明，不改GUI实现或掩盖失败。未重新进行串口/RTK硬件验收。
+
+## 文件入口与本版边界（2026-09-30）
+
+| 文件 | 目的/使用 |
+| --- | --- |
+| `imu_serial_qt.py` | GUI、解析、显示和保存；`python host/imu_serial_qt.py` |
+| `serial_worker.py` | 独立串口收发线程，由GUI调用 |
+| `ntrip_rtcm.py` | NTRIP、RTCM验证和MSM兼容处理 |
+| `run_imu_serial_qt.bat` | 本机快捷启动，换电脑检查解释器路径 |
+| `MPU6050_F9P_Navigation.spec` | PyInstaller打包定义，需另装PyInstaller |
+| `requirements.txt` | GUI依赖，按下文安装 |
+| `test_serial_protocol.py`、`test_ntrip_rtcm.py` | `python -X utf8 -m unittest discover -s host -p 'test_*.py'` |
+
+本次不改GUI运行逻辑。实时算法仍用 [fusion配置](../fusion/README.md)，不自动读取MATLAB的新GM参数。1 Hz KML由 [离线回放](../data/decoded/20260923104556_电动车2/README.md) 生成，原始记录格式不变，地图密钥不上传。
+
+
 [项目主页](../README.md) | 中文 | [English](README_EN.md)
 
 本目录是 GNSS/IMU 实时上位机。程序显示 IMU、GNSS导航状态和天空图，并把带 GPS 时间戳的 IMU、GNSS导航结果与逐星逐频原始观测分别保存成 CSV。具体信号与频点不在界面显示，但仍完整写入RAWX文件，供后续紧组合使用。

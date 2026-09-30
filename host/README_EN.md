@@ -1,5 +1,22 @@
 # MPU6050/F9P Navigation Qt Monitor
 
+Snapshot regression: 66 of 68 host tests passed. Two legacy file-set assertions omit the always-created sync.csv and therefore fail against current behavior. Failures are retained and documented; no GUI behavior or assertions were silently changed. Hardware/RTK acceptance was not rerun.
+
+## File entry points (2026-09-30)
+
+| File | Purpose/use |
+| --- | --- |
+| `imu_serial_qt.py` | GUI/parsing/recording; `python host/imu_serial_qt.py` |
+| `serial_worker.py` | UART worker used by GUI, not a standalone app |
+| `ntrip_rtcm.py` | NTRIP/RTCM validation and MSM compatibility |
+| `run_imu_serial_qt.bat` | Launcher; check local interpreter path |
+| `MPU6050_F9P_Navigation.spec` | PyInstaller build definition, separate dependency |
+| `requirements.txt` | GUI dependencies |
+| `test_serial_protocol.py`, `test_ntrip_rtcm.py` | `python -X utf8 -m unittest discover -s host -p 'test_*.py'` |
+
+GUI behavior is unchanged. Live navigation uses [fusion JSON](../fusion/README_EN.md), not the new MATLAB GM CSV. [Offline replay](../data/decoded/20260923104556_电动车2/README.md) exports 1 Hz KML; map keys remain private.
+
+
 [Project home](../README_EN.md) | [中文](README.md) | English
 
 This monitor displays IMU, navigation status, and sky-view data. It saves separate GPS-timestamped IMU, navigation, and raw-observation CSV files. Signal and frequency details are kept out of the live UI but remain in the RAWX file for later tightly coupled processing.

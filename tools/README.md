@@ -1,5 +1,7 @@
 # MPU6050/F9P 数据采集与 Allan 分析工具
 
+Windows命令行建议使用 `python -X utf8` 运行带中文或²单位的统计工具，避免默认GBK输出失败。测试使用下文discover命令，将host/tools加入正确的模块搜索路径，不用包形式导入旧测试。
+
 [项目主页](../README.md) | 中文 | [English](README_EN.md)
 
 工具与当前STM32串口协议v3配套。默认从PA9/USART1以460800 bit/s接收数据，并分别保存带GPS时间戳的IMU、1 Hz GNSS导航结果和1 Hz RAWX逐星逐频原始观测。
@@ -20,6 +22,48 @@
 | `allan_compare_tc_configs.py` | 温补/标定三方案 Allan 对比（raw / raw+TC / raw+TC+calib） | `data/decoded/<session>/allan_compare_tc_configs/` |
 | `run_tempcal_sop.m` | 一键跑通 SOP 步骤①（选阶+拟合系数）与步骤②（温补+24 位置标定） | `data/calib24/` 下全部温补标定产物 |
 | `check_sync.py` | 核对 sync.csv 诊断文件完整性 | 控制台统计，不生成文件 |
+| `analyze_turn_on_bias.py` | 手动上电采集后的温补标定、跨轮均值散布、质量检查和协方差 | 实验目录内的汇总、图表及中文报告；[使用说明](TURN_ON_BIAS.md) |
+| `fit_temp_order_selection.m` | 逐轴1～5阶比较，推荐阶数仅供参考 | `temp_order_selection.*`、报告及图 |
+| `fit_temp_bias_raw.m` | 原始域温补系数拟合；配置 `axisOrder` 是权威开关 | 温补MAT/CSV、全速率温补CSV及对照图 |
+| `calib24_static_numbered_tempcomp.m` | 24位置逐样本先温补再标定 | 绑定温补配置的加计标定MAT、CSV及图 |
+| `calib24_static_numbered.m` | 无温补24位置标定参考，不是当前test默认参数 | 原始域标定结果 |
+| `gm_autocorrelation_analysis.m` | 温补标定后六轴ACF，10秒块平均传递函数修正 | 六轴GM候选参数CSV、块序列、MAT及自相关图 |
+| `gm_validate_parameters.m` | 分段、去趋势、独立记录和30～600秒尺度复核 | 独立 `gm_validation/`，不覆盖原GM参数 |
+| `position_to_kml.m` | PSINS位置按秒插值为KML，不需Mapping Toolbox | KML及返回的1 Hz位置/时间 |
+| `tests/test_position_to_kml.m` | KML单位、XML、插值及边界回归 | 控制台通过/失败；临时测试文件自动清理 |
+
+## 本版运行顺序与依赖（2026-09-30）
+
+所有命令从仓库根目录执行。Python依赖：`python -m pip install -r tools/requirements_temp_analysis.txt`；采集另装 `tools/requirements.txt`。
+MATLAB动态/静态INS脚本需要外部PSINS并先执行其路径初始化；温补、GM和KML工具不依赖PSINS。
+
+1. 只复现电动车回放：直接使用已发布参数，按 [会话README](../data/decoded/20260923104556_电动车2/README.md) 运行test，无需重做21 h拟合。
+2. 重新拟合：补齐21 h `imu.csv`，确认轴阶数后执行温补SOP；24位置01～24输入本版已发布。
+3. GM辨识与默认独立验证需要另外补齐长时原始记录。仅查看已发布结果或重绘缓存不要求原始CSV，见 [GM说明](GM_VALIDATION.md)。
+4. 上电重复性必须另采真正断电上电的数据；已发布三轮试跑仅为连续通电对照。
+
+```matlab
+addpath('tools');
+run_tempcal_sop('skipStep1',true); % 复用冻结温补，重做24位置标定；会覆盖标定输出
+% 以下两行需要补齐21 h和独立记录，不是下载后即可全流程重算：
+% run('tools/gm_autocorrelation_analysis.m');
+% results = gm_validate_parameters;
+gm_validate_parameters(struct('replotOnly',true)); % 已发布验证MAT重绘
+addpath('tools/tests'); test_position_to_kml;
+```
+
+### 辅助与历史工具
+
+| 文件 | 目的/使用限制 |
+| --- | --- |
+| `analyze_latest_data.py` | 会话汇总质检；`python tools/analyze_latest_data.py <会话目录>`，不传目录会选本地最新会话 |
+| `bnc_direct_proxy.py` | BNC本机直连代理；仅用于旧BNC链路，`--help`查看端口，Qt直连NTRIP不需要它 |
+| `deep_dive_timing.py`、`innovation_dive.py` | 历史AIM时序/新息诊断；文件顶部硬编码本机目录，先修改并补齐记录再运行 |
+| `extract_viz_data.py`、`gen_viz_html.py` | 历史下采样与HTML绘图辅助；先检查顶部数据/输出路径，不属于正式温补SOP |
+| `test_capture_serial.py`、`test_decode_rawx.py` | `python -X utf8 -m unittest discover -s tools -p 'test_*.py'` |
+| `requirements.txt`、`requirements_temp_analysis.txt` | 分别安装采集/Allan和温补统计依赖 |
+
+参数MAT/CSV是冻结实验资产，重新运行拟合/分析会覆盖对应输出；换轴开关后必须整套重标定，不可混用。最新文件用途、上传范围与实验边界见 [版本指南](../docs/版本整理与使用指南_20260930.md)。
 
 ## 安装
 
@@ -149,3 +193,26 @@ unix_ms,pps,sample_count,interrupt_count,interrupt_overruns,cc2_overcapture,dt_g
 - GNSS 文件没有数据：检查 PA2/PA3 交叉连接、共地及 C099 J4 的 ARD 路由。
 - GPS 时间无效：把天线移到能看到天空的位置，等待 F9P 获得有效时间。
 - Allan 提示样本太少：减小 `--skip-minutes` 或延长静态采集时间。
+
+## GM 自相关参数复核
+
+`gm_validate_parameters.m` 对现有GM参数做前后半/四分段、趋势敏感性、独立固定姿态记录和
+30～600秒Allan尺度检验，绘图并输出表格，不覆盖现有GM参数。运行方式、默认独立窗口、
+统计限制及test实际时间/姿态相关Q说明见 [GM_VALIDATION.md](GM_VALIDATION.md)。
+
+## 位置导出Google Earth KML
+
+`position_to_kml.m` 接收 `[纬度,经度,高度]` 和递增秒时间轴，默认角度为PSINS弧度、
+高度为米，按整数秒插值为严格1 Hz，不外推。输出标准KML轨迹及起终点，无需Mapping Toolbox。
+
+```matlab
+addpath('tools');
+[pos_1hz,t_1hz] = position_to_kml(avpL(:,7:9),avpL(:,10),'track_1hz.kml');
+```
+
+当前 `test.m` 已自动调用，使用每次传播并完成反馈后的天线端位置，而非仅有反馈时刻的日志。
+输出为脚本同级 `kml/combined_navigation_1hz.kml`。在Google Earth中打开该文件即可查看轨迹。
+默认 `AltitudeMode='clampToGround'` 贴地显示；坐标中仍保留高度。
+若要显示HMSL海拔轨迹，改为 `'absolute'`；椭球高需先转换，不能直接当HMSL使用。
+其他选项：`AngleUnit='deg'`、`SamplePeriod_s`、`Name`、`LineColor`（KML aabbggrr）、`LineWidth`。
+返回的 `pos_1hz` 为 `[纬度deg,经度deg,高度m]`，`t_1hz` 与之逐行对应。

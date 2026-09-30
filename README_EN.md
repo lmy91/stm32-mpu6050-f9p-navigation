@@ -1,5 +1,21 @@
 # STM32 MPU6050/F9P Integrated Navigation Testbed
 
+## Organized snapshot: 2026-09-30
+
+| Entry | Purpose | Usage |
+| --- | --- | --- |
+| [firmware](firmware/README_EN.md) | STM32 timestamped acquisition and RTCM bridge | CMake build, CubeProgrammer flash |
+| [host](host/README_EN.md) | Qt display, recording and live controls | `python host/imu_serial_qt.py` |
+| [fusion](fusion/README_EN.md) | Python live alignment and 15-state loose coupling | Qt controls, `self_aim_config.json` settings |
+| [tools](tools/README_EN.md) | TC/calibration, Allan, GM, repeatability and KML | Documented Python/MATLAB entry points |
+| [data](data/README.md) | Published inputs, frozen parameters and results | E-bike replay included; long raw records excluded |
+| [e-bike replay](data/decoded/20260923104556_电动车2/README.md) | MATLAB/PSINS replay and comparisons | Configure external PSINS, run `test.m`; exports 1 Hz KML |
+| [docs](docs/README.md) | Wiring, timing, processing contracts and limitations | [Snapshot guide](docs/版本整理与使用指南_20260930.md) |
+| [Pi reference](raspberry_pi5/README.md) | Historical/development reference | Production belongs to the separate Pi repository |
+
+Offline MATLAB loads TC/calibration MAT files, current Allan CSV and autocorrelation GM CSV. Live Python uses its own JSON and is not automatically migrated. GM values are provisional, not independently validated model parameters. Historical comparison scripts do not share all current replay changes. Multi-GB raw records, full-rate TC CSVs, credentials, caches and backups remain local. Firmware and the live Python filter are unchanged by this organization update.
+
+
 [中文](README.md) | [English](README_EN.md)
 
 This project is a low-cost GNSS/INS testbed. An STM32F103 timestamps MPU6050 data from ZED-F9P 1PPS and outputs 1 Hz navigation, sky-view, and RXM-RAWX observations. Qt records separate IMU, navigation, and raw-observation files.

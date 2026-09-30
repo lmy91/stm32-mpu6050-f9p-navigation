@@ -1,12 +1,25 @@
 # PC Real-Time Alignment and GNSS/INS Loose Coupling
 
+## File map and parameter boundary (2026-09-30)
+
+| File | Purpose/use |
+| --- | --- |
+| `realtime_self_aim.py` | Live coarse/fine alignment and configuration validation, started through Qt |
+| `realtime_loose_navigation.py` | Live loose coupling and delayed GNSS replay, started through Qt |
+| `self_aim_config.json` | Runtime configuration, also editable through Qt |
+| `test_realtime_self_aim.py`, `test_realtime_loose_navigation.py` | `python -m unittest fusion.test_realtime_self_aim fusion.test_realtime_loose_navigation` |
+| `__init__.py` | Package entry |
+
+The live filter is unchanged. JSON uses the frozen 2026-09-10 `imu_noise` Allan reference, not the offline replay's 0930 Allan, ACF-derived GM or TC/calibration MAT files. BI/plateau-derived GM is an engineering starting point, not independent validation. See [data inventory](../data/README.md).
+
+
 [中文](README.md) | English
 
 `realtime_self_aim.py` performs coarse/fine alignment. `realtime_loose_navigation.py` then copies the final AVP, biases, covariance and GPS epoch and runs a PC-side 15-state closed-loop GNSS/INS filter. The Qt Integrated Navigation tab displays the fused WGS-84 track, NED velocity, FRD attitude, delay/replay diagnostics, and can record `nav.csv`; alignment remains available as `aim.csv`. A GPS epoch is written only once using its final corrected solution, while `session.json` captures the exact effective runtime configuration for reproducibility.
 
 The workflow is configuration binding, coarse alignment, fine alignment, then the explicit **Finish fine alignment and start integrated navigation** action. Fine alignment otherwise runs continuously. The next timestamped IMU sample continues from the copied fine-alignment state without a reset.
 
-The IMU model now uses the latest long-duration Allan result in `data/allan_results/imu_noise/allan_parameters.csv`. Gyroscope ARW and accelerometer VRW drive the measurement white-noise terms. Each gyro and accelerometer bias axis is a stationary first-order Gauss-Markov process: `phi=exp(-dt/tau)` and `Q=sigma^2[1-exp(-2dt/tau)]`. Allan bias instability supplies the stationary GM sigma; initial bias covariance is configured separately on the P page. The geometric midpoint of each fitted BI plateau is used as an auditable initial correlation time. The nominal process is centred on the turn-on bias estimated during coarse alignment rather than absolute zero. RRW/rate-ramp values are intentionally excluded because the long-period data were contaminated by a temperature change exceeding 2 deg C.
+The IMU configuration uses the frozen 2026-09-10 Allan reference in `data/allan_results/imu_noise/allan_parameters.csv`. Gyroscope ARW and accelerometer VRW drive white-noise terms. Each bias axis uses first-order GM with `phi=exp(-dt/tau)` and `Q=sigma^2[1-exp(-2dt/tau)]`. BI and a plateau's geometric midpoint supply provisional sigma and correlation time; initial covariance is configured separately. The nominal process is centred on the coarse-alignment turn-on estimate, not absolute zero. RRW/rate-ramp terms are excluded due to temperature contamination. This is not independent GM validation.
 
 The R page selects real-time or fixed GNSS noise. Real-time mode builds `position sigma=[hAcc,hAcc,vAcc]` and `velocity sigma=[sAcc,sAcc,sAcc]` for every F9P epoch; an invalid or zero reported value falls back to the configured default. Fixed mode always uses the configured three-axis defaults.
 

@@ -1,5 +1,19 @@
 # MPU6050/F9P 组合导航下位机固件
 
+## 文件入口与本版边界（2026-09-30）
+
+| 文件 | 目的/使用 |
+| --- | --- |
+| `Src/main.c` | 采集、时间关联、UBX解析和RTCM桥接主实现 |
+| `Src/startup_stm32f103xx.S` | 复位和中断向量，随固件链接 |
+| `Src/syscall.c`、`Src/sysmem.c` | 裸机系统调用及内存接口 |
+| `CMakeLists.txt`、`CMakePresets.json`、`cmake/` | 构建与工具链，按下文Release/Debug流程使用 |
+| `stm32f103x8_flash.ld` | Flash/RAM链接布局 |
+| `build/` | 可重建编译产物，不上传 |
+
+本次整理不改固件或协议。新GM和KML属于 [离线工具](../tools/README.md) 与 [MATLAB回放](../data/decoded/20260923104556_电动车2/README.md)，不会因上传而写入STM32。
+
+
 [项目主页](../README.md) | 中文 | [English](README_EN.md)
 
 本目录包含 STM32F103C8T6 的 MPU6050/ZED-F9P 时间同步固件。MPU6050 通过 I2C1 接入，PA1/TIM2_CH2 硬件捕获 DATA_RDY；PA0/TIM2_CH1 捕获 F9P TIMEPULSE。STM32 解析 USART2 上的 UBX，并通过 USART1 以 460800 bit/s 输出带 GPS 时间戳的 IMU、GNSS 和卫星天空图数据。

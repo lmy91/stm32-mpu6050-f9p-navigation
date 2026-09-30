@@ -1,12 +1,25 @@
 # PC 实时对准与 GNSS/INS 松组合
 
+## 文件目的与参数边界（2026-09-30）
+
+| 文件 | 目的/使用 |
+| --- | --- |
+| `realtime_self_aim.py` | 实时粗/精对准与配置检查，通过Qt“自瞄”页运行 |
+| `realtime_loose_navigation.py` | 实时松组合和GNSS延迟重放，通过Qt“组合导航”页运行 |
+| `self_aim_config.json` | 实时参数入口，可由Qt配置页加载/修改 |
+| `test_realtime_self_aim.py`、`test_realtime_loose_navigation.py` | 根目录运行下文unittest命令 |
+| `__init__.py` | Python包入口 |
+
+本次不改实时滤波器。JSON仍引用2026-09-10冻结的 `imu_noise` Allan参考，不读离线test的0930 Allan、自相关GM或温补标定MAT。上传参数不等于实时迁移；JSON中BI/平台构造的GM是工程初值，不是自相关辨识或独立验证通过。来源见 [数据说明](../data/README.md)。
+
+
 中文 | [English](README_EN.md)
 
 `realtime_self_aim.py` 完成 PC 端粗/精对准，`realtime_loose_navigation.py` 接续精对准末状态执行实时 GNSS/INS 松组合。两者直接复用串口协议 v3 的同步数据：100 Hz IMU 驱动 NED 惯导递推，1 Hz F9P WGS-84 位置和 NED 速度进行15状态闭环误差滤波。Qt“自瞄”页负责对准，“组合导航”页显示组合位置地图、NED速度与FRD姿态时间序列；连接前勾选 `AIM`/`NAV` 可分别保存 `aim.csv`/`nav.csv`。
 
 当前流程为：配置装订 → 粗对准 → 精对准 → 点击“结束精对准并启动组合导航”。粗对准达到配置时长后自动切换，也可由Qt按钮手动切换；精对准持续运行，直到用户手动转入组合导航或停止。转入时完整复制末时刻AVP、零偏、P阵、GM参考值和GPS时刻，下一颗IMU继续递推。具体参数由 [`self_aim_config.json`](self_aim_config.json) 或Qt“算法配置”控制。
 
-当前IMU噪声已采用 `data/allan_results/imu_noise/allan_parameters.csv` 的最新长时静态标定结果。陀螺ARW与加计VRW分别作为角速度、比力白噪声密度；陀螺和加计零偏均采用分轴一阶高斯-马尔可夫模型：
+当前IMU噪声配置使用 `data/allan_results/imu_noise/allan_parameters.csv` 的2026-09-10冻结参考。陀螺ARW与加计VRW分别作为角速度、比力白噪声密度；陀螺和加计零偏均采用分轴一阶高斯-马尔可夫模型：
 
 ```text
 δb(k+1) = exp(-dt/τ) δb(k) + w(k)
