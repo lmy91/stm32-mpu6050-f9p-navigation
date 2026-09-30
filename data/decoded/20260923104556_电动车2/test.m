@@ -4,6 +4,7 @@ close all
 
 script_dir = fileparts(mfilename('fullpath'));
 repo_root = fileparts(fileparts(fileparts(script_dir)));
+addpath(fullfile(repo_root,'tools'));  % position_to_kml
 
 %% =========================================================
 % 补偿开关与系数文件
@@ -26,8 +27,23 @@ tempCoeffFile = fullfile(calib_dir, 'temp_coeffs_raw.mat');
 % 24 位标定结果（calib24_static_numbered_tempcomp.m 产物，内部已含温补系数）
 calibResultFile = fullfile(calib_dir, 'calib24_result_tempcomp_azgxgy.mat');
 
+% 0930 最终按轴温补 Allan 参数（GX/GY/AZ 已温补，GZ/AX/AY 未温补）
+% 这里只再用于 ARW/VRW 测量白噪声，不再用 BI/平台区间设置 GM 参数。
+allanParamFile = fullfile(repo_root, 'data', 'allan_results', ...
+    'mpu_21.1h_20260930', 'allan_parameters.csv');
+
+% 21 h 原始数据完成温补、24 位置标定后的自相关 GM 候选参数。
+% 独立分段/跨数据验证见 tools/gm_validate_parameters.m；此处不自动调参。
+gmParamFile = fullfile(repo_root, 'data', 'decoded', '20260926005735', ...
+    'gm_autocorrelation', 'gm_parameters.csv');
+
 % 图片输出目录（IEEE 规范图导出到此，默认脚本同级的 figs/）
 fig_dir = fullfile(script_dir, 'figs');
+
+% Google Earth：1 Hz组合导航轨迹；默认贴地显示，坐标仍保留HMSL高度。
+% 改为 'absolute' 可按海拔显示三维轨迹（本数据高度来自GNSS hmsl_m）。
+kml_file = fullfile(script_dir,'kml','combined_navigation_1hz.kml');
+kml_altitude_mode = 'clampToGround';
 
 %% IEEE 绘图默认样式（白底细线 + 黑白可辨配色）
 %  注意：下面两行会改变本 MATLAB 会话中后续新建图表的默认配色与线宽。
@@ -276,8 +292,16 @@ imu2 = [[-imu1(:,4) imu1(:,3) imu1(:,5)]*pi/180/3600 ...
 imu_static1 = [[-imu_static(:,4) imu_static(:,3) imu_static(:,5)]*pi/180/3600 ...
     [-imu_static(:,7) imu_static(:,6) imu_static(:,8)] imu_static(:,2)];
 
-gyro_static = mean(imu_static1(:,1:3));
-imu2(:,1:3) = imu2(:,1:3)-gyro_static;
+imu_dt = imu1(:,10);
+static_dt = imu_static(:,10);
+assert(all(isfinite(imu_dt)) && all(imu_dt>0) && ...
+       all(isfinite(static_dt)) && all(static_dt>0), ...
+    'IMU integration intervals must be finite and positive.');
+assert(all(diff(imu1(:,2))>0), 'IMU GPS timestamps must be strictly increasing.');
+% First estimate a time-weighted static angular rate [rad/s], then remove
+% that rate times each actual integration interval [s] from its increment.
+gyro_static_rate = sum(imu_static1(:,1:3),1) / sum(static_dt);
+imu2(:,1:3) = imu2(:,1:3)-gyro_static_rate.*imu_dt;
 
 %% 加表零偏
 dt = imu_static(:,10);
@@ -295,22 +319,107 @@ fprintf('|f| = %.6f m/s^2\n',norm(acc_mean));
 %%
 glvs;
 psinstypedef(186);
-[nn, ts, nts] = nnts(2, 0.01);
-% MPU6050 error parameters from Allan variance
-eb = [20;20;20];            % deg/h，暂时可以保持
-db = [5000;5000;5000];      % ug，先从10000收一点
+% ts is only the initialization value; every propagation uses its recorded dt.
+[nn, ts, nts] = nnts(2, median(imu_dt));
+%% MPU6050 first-order GM parameters from calibrated autocorrelation
+% eb/db 是独立的初始协方差，不由 Allan BI 直接覆盖。
+% eb=20 deg/h：减去启机静态均值后，按地球自转量级设置。
+% db=5000 ug：暂用工程初值，后续由加速度计零偏重复性实验替换。
+eb = [20;20;20];
+db = [5000;5000;5000];
 
-web = [0.225458;0.254723;0.276406];
-wdb = [146.85;149.92;213.25];
+assert(isfile(allanParamFile), '0930 Allan parameter file not found: %s', allanParamFile);
+A = readtable(allanParamFile, 'TextType','string');
+requiredAllan = {'sensor','axis','arw_vrw'};
+assert(all(ismember(requiredAllan,A.Properties.VariableNames)), ...
+    '0930 Allan parameter CSV is missing required columns.');
 
-sqrtR0G = [12.3918; 10.5314; 5.54271];     % deg/h
-TauG    = [9.37;    27.19;   58.18];       % s
+axisName = ["x","y","z"];
+arw_g_sensor = zeros(3,1);       % deg/sqrt(h)
+vrw_a_sensor = zeros(3,1);       % m/s/sqrt(h)
+for a = 1:3
+    ig = strcmpi(A.sensor,'gyro') & strcmpi(A.axis,axisName(a));
+    ia = strcmpi(A.sensor,'accel') & strcmpi(A.axis,axisName(a));
+    assert(nnz(ig)==1 && nnz(ia)==1, ...
+        '0930 Allan file must have exactly one row per sensor axis.');
+    arw_g_sensor(a) = A.arw_vrw(ig);
+    vrw_a_sensor(a) = A.arw_vrw(ia);
+end
 
-sqrtR0A = [48.5205; 40.8116; 109.239];     % ug
-TauA    = [58.18;   196.39;  23.35];       % s
-% TauA    = [300;   300;  300];
+% 原始传感器坐标 [X,Y,Z] -> 右-前-上 RFU [-Y,X,Z]。
+% 噪声标准差和时间常数只需交换 X/Y，符号不影响方差。
+rfu = [2 1 3];
+web = arw_g_sensor(rfu);                         % deg/sqrt(h)
+wdb = vrw_a_sensor(rfu) / (60*glv.ug);          % ug/sqrt(Hz)
+
+% 旧 GM 参数来源（已停用）：
+%   sqrtR0G = [12.3918; 10.5314; 5.54271];    % deg/h
+%   TauG    = [9.37; 27.19; 58.18];           % s
+%   sqrtR0A = [48.5205; 40.8116; 109.239];    % ug
+%   TauA    = [58.18; 196.39; 23.35];         % s
+% 后续曾使用的 Allan 工程近似（同样停用）：
+%   sqrtR0G = Allan bias_instability;
+%   TauG    = sqrt(bias_tau_start_s*bias_tau_end_s);
+%   sqrtR0A = 1000*Allan bias_instability;
+%   TauA    = sqrt(bias_tau_start_s*bias_tau_end_s);
+% 以上把 Allan BI 与平台区间当作一阶 GM 参数，仅为早期工程近似。
+
+assert(isfile(gmParamFile), 'GM autocorrelation parameter file not found: %s', gmParamFile);
+G = readtable(gmParamFile, 'TextType','string');
+requiredGM = {'Sensor','Axis','GMStdEngineering','EngineeringUnit', ...
+    'CorrelationTime_s','Reliable','FitStatus'};
+assert(all(ismember(requiredGM,G.Properties.VariableNames)), ...
+    'GM autocorrelation CSV is missing required columns.');
+
+gm_g_sensor = zeros(3,1);        % deg/h, continuous GM stationary sigma
+tau_g_sensor = zeros(3,1);       % s
+gm_a_sensor = zeros(3,1);        % mg, continuous GM stationary sigma
+tau_a_sensor = zeros(3,1);       % s
+gmReliable = false(6,1);
+for a = 1:3
+    ig = strcmpi(G.Sensor,'gyro') & strcmpi(G.Axis,axisName(a));
+    ia = strcmpi(G.Sensor,'accel') & strcmpi(G.Axis,axisName(a));
+    assert(nnz(ig)==1 && nnz(ia)==1, ...
+        'GM CSV must have exactly one row per sensor axis.');
+    assert(strcmpi(G.EngineeringUnit(ig),'deg/h') && ...
+           strcmpi(G.EngineeringUnit(ia),'mg'), ...
+        'GM CSV unit mismatch: gyro must be deg/h and accel must be mg.');
+    assert(strcmpi(G.FitStatus(ig),'OK') && strcmpi(G.FitStatus(ia),'OK'), ...
+        'GM autocorrelation fit failed for sensor axis %s.', axisName(a));
+
+    gm_g_sensor(a) = G.GMStdEngineering(ig);
+    tau_g_sensor(a) = G.CorrelationTime_s(ig);
+    gm_a_sensor(a) = G.GMStdEngineering(ia);
+    tau_a_sensor(a) = G.CorrelationTime_s(ia);
+    gmReliable(a) = logical(G.Reliable(ia));
+    gmReliable(a+3) = logical(G.Reliable(ig));
+end
+assert(all(isfinite([gm_g_sensor; tau_g_sensor; gm_a_sensor; tau_a_sensor])) && ...
+       all([gm_g_sensor; tau_g_sensor; gm_a_sensor; tau_a_sensor] > 0), ...
+    'GM autocorrelation parameters must be finite and positive.');
+if ~all(gmReliable)
+    warning(['Some GM axes are marked Reliable=false under the identification-script criteria. ' ...
+        'All GM values remain candidates pending independent validation; ' ...
+        'see tools/gm_validate_parameters.m.']);
+end
+
+sqrtR0G = gm_g_sensor(rfu);                      % deg/h, GM stationary sigma
+TauG = tau_g_sensor(rfu);                        % s, autocorrelation time
+sqrtR0A = 1000*gm_a_sensor(rfu);                 % mg -> ug, GM stationary sigma
+TauA = tau_a_sensor(rfu);                        % s, autocorrelation time
 
 imuerr = imuerrset(eb, db, web, wdb, sqrtR0G, TauG, sqrtR0A, TauA);
+
+fprintf('Bias model: first-order Gauss-Markov using candidate calibrated-autocorrelation parameters\n');
+fprintf('Independent GM validation: tools/gm_validate_parameters.m (no automatic retuning)\n');
+fprintf('Allan white-noise parameter file: %s\n', allanParamFile);
+fprintf('GM autocorrelation parameter file: %s\n', gmParamFile);
+fprintf('Gyro ARW RFU [x y z] = %.6f %.6f %.6f deg/sqrt(h)\n', web);
+fprintf('Accel VRW RFU [x y z] = %.3f %.3f %.3f ug/sqrt(Hz)\n', wdb);
+fprintf('Gyro GM sigma RFU [x y z] = %.6f %.6f %.6f deg/h\n', sqrtR0G);
+fprintf('Gyro tau RFU [x y z] = %.3f %.3f %.3f s\n', TauG);
+fprintf('Accel GM sigma RFU [x y z] = %.6f %.6f %.6f ug\n', sqrtR0A);
+fprintf('Accel tau RFU [x y z] = %.3f %.3f %.3f s\n', TauA);
 % Initial navigation-state uncertainty
 davp0 = avperrset( ...
     [120;120;600], ...      % arcmin = 2°,2°,10°
@@ -351,10 +460,10 @@ ins = inslever(ins);
 
 lever_std = [0.02;0.02;0.05];   % 测量不确定度
 
-r0 = vperrset(0.2, 3.0);
+% Initial GNSS R uses the first receiver-reported accuracy epoch.
+% gnss1 columns: 9=v_acc_m, 10=h_acc_m, 11=s_acc_m_s.
+r0 = gnss_measurement_std(gnss1(1,11),gnss1(1,10),gnss1(1,9),ins);
 kf = kfinit(ins, davp0, imuerr, lever_std, r0);
-% Save normal GNSS measurement covariance
-R_gnss = kf.Rk;
 
 %% ZUPT configuration
 % State:
@@ -380,10 +489,10 @@ gyro_static_th = 1.5;             % deg/s
 static_count = 0;
 zupt_active = false;
 
-% KF runs at 50 Hz (nn=2, ts=0.01)
-% apply ZUPT at 10 Hz
-zupt_interval = 10;
-zupt_counter = 0;
+% Preserve the previous effective ZUPT rate (50 Hz / 10 = 5 Hz), but use
+% GPS time rather than a sample counter when the IMU intervals vary.
+zupt_period_s = 0.2;
+next_zupt_time = imu1(1,2)-imu_dt(1)+zupt_period_s;
 
 zupt_log = zeros(fix(len/nn),2);  % [time, active]
 iz = 1;
@@ -397,12 +506,14 @@ imugpssyn(imu(:,7), gps(:,7));
 
 len = length(imu);
 
-xfb_log = prealloc(fix(len/nn), kf.n+1);
-[avp, xkpk] = prealloc(fix(len/nn), 10, 2*kf.n+1);
+num_steps = ceil(len/nn);  % include a final unpaired sample, if present
+xfb_log = prealloc(num_steps, kf.n+1);
+[avp, xkpk] = prealloc(num_steps, 10, 2*kf.n+1);
 
-bias_log = zeros(fix(len/nn),7);
-zupt_log = zeros(fix(len/nn),2);
-avpL = zeros(fix(len/nn),10);
+bias_log = zeros(num_steps,7);
+zupt_log = zeros(num_steps,2);
+avpL = zeros(num_steps,10);
+nav_position_log = zeros(num_steps,4);  % 每次传播后天线端 [lat(rad),lon(rad),h(m),GPS TOW(s)]
 timebar(nn, len, '18-state SINS/GPS.');
 
 ki = 1;
@@ -410,24 +521,35 @@ iz = 1;
 
 static_count = 0;
 zupt_active = false;
-zupt_counter = 0;
+next_zupt_time = imu1(1,2)-imu_dt(1)+zupt_period_s;
 
-for k = 1:nn:len-nn+1
+for k = 1:nn:len
 
-    k1 = k + nn - 1;
+    k1 = min(k + nn - 1, len);
 
     wvm = imu(k:k1,1:6);
+    dt_pair = imu_dt(k:k1);
     t   = imu(k1,end);
 
     %% =========================================
     % 1. SINS propagation
     %% =========================================
-    ins = insupdate(ins, wvm);
+    [ins, Cnb_mid] = insupdate_actual_time(ins, wvm, dt_pair);
+    nts = ins.nts;
 
     %% =========================================
     % 2. KF prediction
     %% =========================================
+    % kffk uses ins.nts, including its existing large-interval expm branch.
+    % Qt remains in RFU/body noise coordinates; Gammak rotates only the
+    % gyro/accelerometer white-noise blocks into navigation coordinates.
+    % The GM driving noises and their bias states remain in body coordinates.
+    kf.nts = nts;
     kf.Phikk_1 = kffk(ins);
+    kf.Qk = kf.Qt*nts;
+    kf.Gammak = eye(kf.n);
+    kf.Gammak(1:3,1:3) = -Cnb_mid;
+    kf.Gammak(4:6,4:6) = Cnb_mid;
     kf = kfupdate(kf);
 
     meas_updated = false;
@@ -444,9 +566,17 @@ for k = 1:nn:len-nn+1
 
         ins = inslever(ins);
 
-        % Restore normal GNSS measurement model
+        % Epoch-wise GNSS measurement model and covariance.
+        % Velocity: receiver s_acc for E/N/U.
+        % Position: h_acc for horizontal, v_acc for vertical; horizontal
+        % metre-level accuracy is converted to latitude/longitude radians.
         kf.Hk = kfhk(ins);
-        kf.Rk = R_gnss;
+        r_gnss = gnss_measurement_std( ...
+            gnss1(kgps,11), ...  % speed RMSE [m/s]
+            gnss1(kgps,10), ...  % horizontal position RMSE [m]
+            gnss1(kgps,9), ...   % vertical position RMSE [m]
+            ins);
+        kf.Rk = diag(r_gnss.^2);
 
         zk = [ ...
             ins.vnL - ins.an*dt_sync - vnGPS;
@@ -484,7 +614,7 @@ for k = 1:nn:len-nn+1
     %% =========================================
 
     % wvm contains angular increments in rad
-    % sum over nn samples / nts => rad/s
+    % sum over this block / its actual duration => rad/s
     omega_b = sum(wvm(:,1:3),1)' / nts;
 
     gyro_norm_dps = norm(omega_b) / glv.deg;
@@ -495,10 +625,15 @@ for k = 1:nn:len-nn+1
     % 5. ZUPT update
     %% =========================================
 
-    zupt_counter = zupt_counter + 1;
+    zupt_due = t >= next_zupt_time-1e-9;
+    if zupt_due
+        % Advance past this epoch without producing repeated measurements
+        % when an integration block spans more than one scheduling period.
+        periods_elapsed = floor((t-next_zupt_time+1e-9)/zupt_period_s)+1;
+        next_zupt_time = next_zupt_time+periods_elapsed*zupt_period_s;
+    end
 
-    if zupt_active && imu_quiet && ...
-            mod(zupt_counter, zupt_interval) == 0
+    if zupt_active && imu_quiet && zupt_due
 
         % Measurement:
         %
@@ -558,6 +693,11 @@ for k = 1:nn:len-nn+1
     % 7. ZUPT state log
     %% =========================================
 
+    % 连续记录组合导航位置，不只记录有GNSS/ZUPT反馈的时刻。
+    % 后处理按整数GPS秒插值为1 Hz，与现有avpL使用相同的杆臂端位置。
+    ins = inslever(ins);
+    nav_position_log(iz,:) = [ins.posL',t];
+
     zupt_log(iz,:) = [t, ...
         double(zupt_active && imu_quiet)];
 
@@ -573,194 +713,239 @@ bias_log(ki:end,:) = [];
 
 zupt_log(iz:end,:) = [];
 avpL(ki:end,:) = [];
+nav_position_log(iz:end,:) = [];
 
+%% Google Earth KML：实际时间轴上的严格1 Hz位置结果，不外推端点
+[pos_kml_1hz,time_kml_1hz] = position_to_kml( ...
+    nav_position_log(:,1:3),nav_position_log(:,4),kml_file, ...
+    'AngleUnit','rad','SamplePeriod_s',1, ...
+    'AltitudeMode',kml_altitude_mode,'Name','Combined navigation (1 Hz)');
+fprintf('KML exported: %s (%d points, 1 Hz)\n',kml_file,numel(time_kml_1hz));
 
-%% PSINS 标准图：insplot / kfplot（自动保存新产生的 figure）
-figsPrev = findobj(0,'Type','figure');
-
+%% PSINS 标准图：insplot / kfplot
 insplot(avp,'avp');
 kfplot(xkpk);
-
-if ~isempty(fig_dir) && ~exist(fig_dir,'dir')
+%% IEEE single-column figures (8.8 cm x 7.05 cm)
+if ~exist(fig_dir,'dir')
     mkdir(fig_dir);
 end
 
-figsNow = findobj(0,'Type','figure');
-figsNew = figsNow(~ismember(figsNow,figsPrev));
-for i = 1:numel(figsNew)
-    save_fig(figsNew(i), fig_dir, sprintf('fig_dyn_00_psins_%02d', i));
+fig_width_cm = 8.8;
+fig_height_cm = 7.05;
+font_size_pt = 9.5;      % 略大于常规期刊字号，便于 PPT 展示
+line_width = 1.25;
+color_ins = [0.00 0.35 0.70];
+color_gnss = [0.15 0.15 0.15];
+color_roll = [0.85 0.33 0.10];
+
+t_ref = gnss1(:,2) - gnss1(1,2);
+t_ins = avpL(:,10) - gnss1(1,2);
+
+% GNSS and INS positions in local ENU coordinates [m].
+pos_ref = gnss2(1,4:6);
+gnss_enu = geodetic_to_local_enu(gnss2(:,4:6), pos_ref);
+ins_enu = geodetic_to_local_enu(avpL(:,7:9), pos_ref);
+
+%% Figure 1: horizontal position trajectory
+fig_pos = figure('Color','w');
+plot(gnss_enu(:,1),gnss_enu(:,2),'--','Color',color_gnss, ...
+    'LineWidth',1.05,'DisplayName','GNSS');
+hold on;
+plot(ins_enu(:,1),ins_enu(:,2),'-','Color',color_ins, ...
+    'LineWidth',line_width,'DisplayName','SINS/GNSS');
+plot(gnss_enu(1,1),gnss_enu(1,2),'o','Color',[0 0 0], ...
+    'MarkerFaceColor','w','MarkerSize',4.2,'HandleVisibility','off');
+axis equal;
+xlabel('East (m)');
+ylabel('North (m)');
+ylim([-1200 600])
+legend('Location','southeast');
+save_ieee_single_column(fig_pos,fig_dir,'fig_ieee_01_position_trajectory', ...
+    fig_width_cm,fig_height_cm,font_size_pt,600);
+
+%% Figure 2: east, north and up velocity components
+fig_vel = figure('Color','w');
+tl_vel = tiledlayout(fig_vel,3,1,'TileSpacing','compact','Padding','compact');
+vel_gnss = [gnss1(:,7),gnss1(:,6),-gnss1(:,8)];
+vel_ins = avpL(:,4:6);
+vel_labels = {'v_E (m/s)','v_N (m/s)','v_U (m/s)'};
+for a = 1:3
+    ax = nexttile(tl_vel);
+    plot(ax,t_ref,vel_gnss(:,a),'--','Color',color_gnss, ...
+        'LineWidth',1.0,'DisplayName','GNSS');
+    hold(ax,'on');
+    plot(ax,t_ins,vel_ins(:,a),'-','Color',color_ins, ...
+        'LineWidth',line_width,'DisplayName','SINS/GNSS');
+    ylabel(ax,vel_labels{a});
+    xlim(ax,[t_ref(1),t_ref(end)]);
+    if a < 3
+        ax.XTickLabel = [];
+    else
+        xlabel(ax,'Time (s)');
+    end
+    if a == 1
+        legend(ax,'Location','best','NumColumns',2);
+    end
 end
-%%
-% GNSS
-fig1 = figure;
+save_ieee_single_column(fig_vel,fig_dir,'fig_ieee_02_velocity_components', ...
+    fig_width_cm,fig_height_cm,font_size_pt,600);
 
-subplot(3,1,1)
-plot(gnss1(:,2), gnss1(:,7)); hold on
-plot(avpL(:,end), avpL(:,4));
-grid off
-ylabel('V_E / m/s')
-legend('GNSS antenna','INS antenna')
+%% Figure 3: horizontal attitude and heading
+fig_att = figure('Color','w');
+tl_att = tiledlayout(fig_att,2,1,'TileSpacing','compact','Padding','compact');
+att_deg = avpL(:,1:3)/glv.deg;  % [pitch, roll, yaw]
+att_deg(:,3) = unwrap(avpL(:,3))/glv.deg;
 
-subplot(3,1,2)
-plot(gnss1(:,2), gnss1(:,6)); hold on
-plot(avpL(:,end), avpL(:,5));
-grid off
-ylabel('V_N / m/s')
+ax_att_h = nexttile(tl_att);
+plot(ax_att_h,t_ins,att_deg(:,1),'-','Color',color_ins, ...
+    'LineWidth',line_width,'DisplayName','Pitch');
+hold(ax_att_h,'on');
+plot(ax_att_h,t_ins,att_deg(:,2),'-','Color',color_roll, ...
+    'LineWidth',line_width,'DisplayName','Roll');
+ylabel(ax_att_h,'Angle (deg)');
+xlim(ax_att_h,[t_ref(1),t_ref(end)]);
+ax_att_h.XTickLabel = [];
+legend(ax_att_h,'Location','best','NumColumns',2);
 
-subplot(3,1,3)
-plot(gnss1(:,2), -gnss1(:,8)); hold on
-plot(avpL(:,end), avpL(:,6));
-grid off
-ylabel('V_U / m/s')
-xlabel('Time / s')
+ax_att_yaw = nexttile(tl_att);
+plot(ax_att_yaw,t_ins,att_deg(:,3),'-','Color',color_ins, ...
+    'LineWidth',line_width);
+xlabel(ax_att_yaw,'Time (s)');
+ylabel(ax_att_yaw,'Heading (deg)');
+xlim(ax_att_yaw,[t_ref(1),t_ref(end)]);
 
-save_fig(fig1, fig_dir, 'fig_dyn_01_gnss_vs_ins_velocity');
+save_ieee_single_column(fig_att,fig_dir,'fig_ieee_03_attitude_components', ...
+    fig_width_cm,fig_height_cm,font_size_pt,600);
 
-fig2 = figure;
+%% Figure 4: bias
+fig_att = figure('Color','w');
+tl_bias = tiledlayout(fig_att,2,1,'TileSpacing','compact','Padding','compact');
 
-subplot(2,1,1)
-plot(bias_log(:,end), bias_log(:,1:3))
-grid off
-ylabel('Gyro bias / deg/h')
-legend('x','y','z')
+ax_gyro = nexttile(tl_bias);
+plot(ax_gyro,t_ins,bias_log(:,1),'-','Color',color_ins, ...
+    'LineWidth',line_width,'DisplayName','X');
+hold(ax_gyro,'on');
+plot(ax_gyro,t_ins,bias_log(:,2),'-','Color',color_gnss, ...
+    'LineWidth',line_width,'DisplayName','Y');
+hold(ax_gyro,'on');
+plot(ax_gyro,t_ins,bias_log(:,3),'-','Color',color_roll, ...
+    'LineWidth',line_width,'DisplayName','Z');
 
-subplot(2,1,2)
-plot(bias_log(:,end), bias_log(:,4:6))
-grid off
-ylabel('Acc bias / ug')
-xlabel('Time / s')
-legend('x','y','z')
+ylabel(ax_gyro,'Gyro bias (deg/h)');
+xlim(ax_gyro,[t_ref(1),t_ref(end)]);
+ax_gyro.XTickLabel = [];
+legend(ax_gyro,'Location','best','NumColumns',3);
 
-save_fig(fig2, fig_dir, 'fig_dyn_02_kf_bias');
+ax_acce = nexttile(tl_bias);
+plot(ax_acce,t_ins,bias_log(:,4),'-','Color',color_ins, ...
+    'LineWidth',line_width,'DisplayName','X');
+hold(ax_acce,'on');
+plot(ax_acce,t_ins,bias_log(:,5),'-','Color',color_gnss, ...
+    'LineWidth',line_width,'DisplayName','Y');
+hold(ax_acce,'on');
+plot(ax_acce,t_ins,bias_log(:,6),'-','Color',color_roll, ...
+    'LineWidth',line_width,'DisplayName','Z');
 
-fig3 = figure;
+ylabel(ax_acce,'Acce bias (ug)');
+xlim(ax_acce,[t_ref(1),t_ref(end)]);
 
-subplot(4,1,1)
-plot(avp(:,end),avp(:,4));
-ylabel('V_E')
-grid off
+xlabel(ax_acce,'Time (s)');
+xlim(ax_acce,[t_ref(1),t_ref(end)]);
 
-subplot(4,1,2)
-plot(avp(:,end),avp(:,1)/glv.deg);
-ylabel('Pitch / deg')
-grid off
-
-subplot(4,1,3)
-plot(bias_log(:,end),bias_log(:,4));
-ylabel('b_{ax} / ug')
-grid off
-
-subplot(4,1,4)
-plot(gnss1(:,2),hypot(gnss1(:,6),gnss1(:,7)));
-ylabel('GNSS speed')
-xlabel('Time / s')
-grid off
-
-save_fig(fig3, fig_dir, 'fig_dyn_03_velocity_attitude_bias');
-
-%%
-fig4 = figure;
-
-subplot(2,1,1)
-plot(gnss1(:,2), ...
-    hypot(gnss1(:,6),gnss1(:,7)));
-grid off
-ylabel('GNSS speed / m/s');
-
-subplot(2,1,2)
-stairs(zupt_log(:,1),zupt_log(:,2));
-grid off
-ylim([-0.1 1.1]);
-ylabel('ZUPT');
-xlabel('GPS TOW / s');
-
-save_fig(fig4, fig_dir, 'fig_dyn_04_gnss_speed_zupt');
-
-%%
-fig5 = figure;
-
-plot(gnss1(:,2),gnss1(:,7),'LineWidth',1);
-hold on
-plot(avp(:,end),avp(:,4),'LineWidth',1);
-
-yyaxis right
-stairs(zupt_log(:,1),zupt_log(:,2),'--');
-
-grid off
-
-yyaxis left
-ylabel('V_E / m/s');
-
-yyaxis right
-ylabel('ZUPT');
-
-xlabel('Time / s');
-
-legend('GNSS','INS/GNSS','ZUPT');
-
-save_fig(fig5, fig_dir, 'fig_dyn_05_ve_zupt');
-
-
+save_ieee_single_column(fig_att,fig_dir,'fig_ieee_04_bias', ...
+    fig_width_cm,fig_height_cm,font_size_pt,600);
 %% =====================================================================
 %%                             LOCAL FUNCTIONS
 %% =====================================================================
 
-function fp = save_fig(fh, figDir, baseName, heightIn, widthIn, fontSize, dpi)
-% 按 IEEE 期刊规范美化并保存 figure（PNG）。
-%   heightIn : 图高 [inch]；省略时按子图数量自动估计
-%   widthIn  : 图宽 [inch]，默认 IEEE 单栏 3.5（双栏用 7.16）
-%   fontSize : 轴/图例字号 [pt]，默认 8
-%   dpi      : 导出分辨率，默认 600
-    if nargin < 7 || isempty(dpi),      dpi      = 600; end
-    if nargin < 6 || isempty(fontSize), fontSize = 8;   end
-    if nargin < 5 || isempty(widthIn),  widthIn  = 3.5; end
-    if nargin < 4 || isempty(heightIn)
-        nAx = numel(findall(fh,'Type','axes'));
-        heightIn = 1.6 + 1.3*max(nAx,1);   % 每个子图约 1.3 in
+function [ins, Cnb_mid] = insupdate_actual_time(ins,wvm,dt_pair)
+% Integrate one/two recorded samples without assuming dt = 0.01 s.
+% PSINS cnscl uses equal-duration subsamples. For a two-sample block, assume
+% linear angular rate/specific force through the original interval midpoints
+% and integrate it over two equal virtual half-intervals within this block.
+% The columns of M sum to one, so total angle and delta-v are unchanged.
+% Its determinant is T^2/(4*h1*h2), giving the unequal-interval coning/sculling
+% coefficient (2/3)*det(M) = T^2/(6*h1*h2). No samples cross block boundaries.
+    dt_pair = dt_pair(:);
+    n_pair = size(wvm,1);
+    assert(n_pair==numel(dt_pair) && any(n_pair==[1,2]), ...
+        'Actual-time propagation requires one or two matching IMU intervals.');
+    assert(all(isfinite(dt_pair)) && all(dt_pair>0), ...
+        'Actual-time propagation requires positive finite IMU intervals.');
+    qnb_before = ins.qnb;
+    if n_pair==2
+        h1 = dt_pair(1);
+        h2 = dt_pair(2);
+        assert(max(h1,h2)/min(h1,h2)<=4, ...
+            'IMU interval ratio exceeds 4; check gaps/timing before linear two-sample propagation.');
+        M = [(3*h1+h2)/(4*h1), (h2-h1)/(4*h2); ...
+             (h1-h2)/(4*h1), (h1+3*h2)/(4*h2)];
+        wvm = M*wvm;
     end
-
-    apply_ieee_style(fh, widthIn, heightIn, fontSize);
-
-    fp = fullfile(figDir, [baseName '.png']);
-    try
-        exportgraphics(fh, fp, 'Resolution', dpi);
-    catch
-        print(fh, fp, '-dpng', sprintf('-r%d', dpi));
+    ins.ts = sum(dt_pair)/n_pair;
+    ins = insupdate(ins,wvm);
+    % Quaternion midpoint (with matching signs) is a rotation matrix, unlike
+    % an arithmetic mean of Cnb matrices. Use it for the white-noise mapping.
+    if dot(qnb_before,ins.qnb)<0
+        qnb_before = -qnb_before;
     end
+    qnb_mid = qnb_before+ins.qnb;
+    Cnb_mid = q2mat(qnb_mid/norm(qnb_mid));
 end
 
+function r = gnss_measurement_std(speed_rmse,horizontal_rmse,vertical_rmse,ins)
+% Build the six-element GNSS measurement standard-deviation vector for
+% [vE,vN,vU,lat,lon,h]. Receiver accuracies are treated as 1-sigma RMSE.
+    acc = [speed_rmse,horizontal_rmse,vertical_rmse];
+    assert(all(isfinite(acc)) && all(acc>0), ...
+        'GNSS receiver accuracy values must be finite and positive.');
+    r = [repmat(speed_rmse,3,1); ...
+         horizontal_rmse/ins.eth.RMh; ...
+         horizontal_rmse/ins.eth.clRNh; ...
+         vertical_rmse];
+end
 
-function apply_ieee_style(fh, widthIn, heightIn, fontSize)
-% IEEE 期刊风格统一设置：
-%   白底 / Times New Roman / 刻度朝内 / 四边全框 / 无网格 / 细轴线 / 图例无边框
-    set(fh, 'Color','w', ...
-        'Units','inches', ...
-        'Position',[1 1 widthIn*1.4 heightIn*1.4], ...   % 屏幕显示放大，便于查看
-        'PaperUnits','inches', ...
-        'PaperPosition',[0 0 widthIn heightIn], ...
-        'PaperSize',[widthIn heightIn]);
+function enu = geodetic_to_local_enu(pos,pos0)
+% Convert [lat(rad), lon(rad), h(m)] to local [E,N,U] about pos0.
+    a = 6378137.0;
+    f = 1/298.257223563;
+    e2 = f*(2-f);
+    lat0 = pos0(1);
+    h0 = pos0(3);
+    den = sqrt(1-e2*sin(lat0)^2);
+    RN = a/den;
+    RM = a*(1-e2)/den^3;
+    dlat = pos(:,1)-lat0;
+    dlon = atan2(sin(pos(:,2)-pos0(2)),cos(pos(:,2)-pos0(2)));
+    enu = [dlon*(RN+h0)*cos(lat0), dlat*(RM+h0), pos(:,3)-h0];
+end
+
+function fp = save_ieee_single_column(fh,fig_dir,base_name, ...
+        width_cm,height_cm,font_size_pt,dpi)
+% Exact IEEE single-column canvas with PPT-friendly font and line weights.
+    set(fh,'Color','w','Renderer','painters', ...
+        'Units','centimeters','Position',[2 2 width_cm height_cm], ...
+        'PaperUnits','centimeters','PaperPosition',[0 0 width_cm height_cm], ...
+        'PaperSize',[width_cm height_cm]);
 
     ax = findall(fh,'Type','axes');
-    if ~isempty(ax)
-        set(ax, ...
-            'FontName','Times New Roman', ...
-            'FontSize',fontSize, ...
-            'Box','on', ...
-            'TickDir','in', ...
-            'TickLength',[0.014 0.014], ...
-            'LineWidth',0.75, ...
-            'XMinorTick','on', ...
-            'YMinorTick','on', ...
-            'XGrid','off', ...
-            'YGrid','off', ...
-            'Color','w');
+    set(ax,'FontName','Times New Roman','FontSize',font_size_pt, ...
+        'Box','on','TickDir','in','TickLength',[0.012 0.012], ...
+        'LineWidth',0.8,'XGrid','off','YGrid','off','Color','w', ...
+        'Layer','top');
+    for i = 1:numel(ax)
+        ax(i).LabelFontSizeMultiplier = 1.0;
+        ax(i).TitleFontSizeMultiplier = 1.0;
     end
 
     lg = findall(fh,'Type','legend');
     if ~isempty(lg)
-        set(lg, ...
-            'Box','off', ...
-            'FontName','Times New Roman', ...
-            'FontSize',max(fontSize-1,6));
+        set(lg,'Box','off','FontName','Times New Roman', ...
+            'FontSize',max(font_size_pt-1,8));
     end
+
+    fp = fullfile(fig_dir,[base_name '.png']);
+    % print respects PaperSize/PaperPosition exactly; exportgraphics would
+    % tightly crop the canvas and change the requested 8.8 cm x 7.05 cm size.
+    print(fh,fp,'-dpng',sprintf('-r%d',dpi),'-painters');
 end

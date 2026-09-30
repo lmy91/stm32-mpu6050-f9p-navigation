@@ -455,10 +455,10 @@ end
 
 figFiles = {};   % 记录已保存的图片，最后统一打印
 
-legendLabels = {'Raw','TC','TC + calib.'};
+legendLabels = {'Raw','TC','TC + Calib.'};
 
 % IEEE 曲线样式：颜色 + 线型双重区分
-ieeeLW = 1.15;
+ieeeLW = 1.5;
 ieeeC  = [0   0   0;          % 1) raw                        黑   实线
           0 114 178;          % 2) + temp comp                蓝   虚线
           213 94 0] / 255;    % 3) + temp comp + 24-pos calib 朱红 点划线
@@ -478,10 +478,10 @@ figFiles{end+1} = save_fig(fig1, cfg.figDir, ...
     'fig_static_01_velocity_error_axes', 5.2, 3.5, 8, 600);
 
 fig2 = plot_error_norm(tPlot, seriesVelocity, ...
-    '|e_v|_2 / (m s^{-1})', 'Static velocity-error norm', ...
+    'Velocity error norm (m/s)', '', ...
     legendLabels, ieeeC, ieeeLS, ieeeLW);
 figFiles{end+1} = save_fig(fig2, cfg.figDir, ...
-    'fig_static_02_velocity_error_norm', 2.65, 3.5, 8, 600);
+    'fig_static_02_velocity_error_norm', 4.2, 6.0, 18, 600);
 
 % 3-4. Position error: three axes + separate 3-D norm
 fig3 = plot_three_axis_error(tPlot, seriesPosition, ...
@@ -492,10 +492,10 @@ figFiles{end+1} = save_fig(fig3, cfg.figDir, ...
     'fig_static_03_position_error_axes', 5.2, 3.5, 8, 600);
 
 fig4 = plot_error_norm(tPlot, seriesPosition, ...
-    '|e_p|_2 / m', 'Static position-error norm', ...
+    'Position error norm (m)', 'Static position-error norm', ...
     legendLabels, ieeeC, ieeeLS, ieeeLW);
 figFiles{end+1} = save_fig(fig4, cfg.figDir, ...
-    'fig_static_04_position_error_norm', 2.65, 3.5, 8, 600);
+    'fig_static_04_position_error_norm', 4.2, 6.0, 18, 600);
 
 % 5-6. Attitude error: three axes + separate 3-D norm
 fig5 = plot_three_axis_error(tPlot, seriesAttitude, ...
@@ -506,10 +506,10 @@ figFiles{end+1} = save_fig(fig5, cfg.figDir, ...
     'fig_static_05_attitude_error_axes', 5.2, 3.5, 8, 600);
 
 fig6 = plot_error_norm(tPlot, seriesAttitude, ...
-    '|e_{att}|_2 / deg', 'Static attitude-error norm', ...
+    'Attitude error norm (deg)', 'Static attitude-error norm', ...
     legendLabels, ieeeC, ieeeLS, ieeeLW);
 figFiles{end+1} = save_fig(fig6, cfg.figDir, ...
-    'fig_static_06_attitude_error_norm', 2.65, 3.5, 8, 600);
+    'fig_static_06_attitude_error_norm', 4.2, 6.0, 18, 600);
 
 % 只保留本次定义的六张静态图；动态图不受影响。
 expectedStatic = string(figFiles(:));
@@ -604,10 +604,10 @@ function fh = plot_error_norm(tSec, series, yLabelText, titleText, ...
             'LineWidth',lineWidth);
     end
     xlim(ax, [tSec(1) tSec(end)]);
-    xlabel(ax, 'Elapsed time / s');
+    xlabel(ax, 'Time (s)');
     ylabel(ax, yLabelText, 'Interpreter','tex');
-    title(ax, titleText, 'FontWeight','normal');
-    legend(ax, lineHandles, legendLabels, 'Location','best');
+    % title(ax, titleText, 'FontWeight','normal');
+    legend(ax, lineHandles, legendLabels, 'Location','best');%     set(ax,'FontSize',20)
 end
 
 
