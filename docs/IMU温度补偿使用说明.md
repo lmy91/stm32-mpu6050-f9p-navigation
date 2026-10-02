@@ -1,154 +1,124 @@
-# IMU 温度补偿使用说明
+# IMU 原始域多阶温补、24 位置标定与 Allan 验证
 
-> 适用数据：20260926005735（21 h 室外静态采集，100 Hz）
-> 补偿链路：**原始数据 → 24 位置标定补偿（系统误差）→ 3 阶温度模型补偿（温漂）**
+更新日期：2026-09-29。本说明取代旧版“先标定再温补”说明。
 
----
+> **怎么操作** → 见 [温补标定 SOP](温补标定SOP.md)（正式流程、命令、参数契约与禁止事项）；本文解释**为什么**这样做（原理、公式与结论边界）。步骤①②已可用 `tools/run_tempcal_sop.m` 一键跑通。
 
-## 1. 补偿模型总览
+## 唯一处理顺序
 
-对每个采样点按以下顺序执行两级补偿（顺序不可颠倒）：
+1. 用原始 21h 静态记录逐轴选择温度多项式阶数，然后拟合原始域温漂系数。
+2. 对 24 位置记录逐样本温补，再计算加计标定矩阵、加计零偏和陀螺静态零偏。
+3. 对待处理 IMU 原始物理量，先使用同一组温补系数，再使用配套标定参数。
 
-### 第一级：24 位置标定补偿（系统误差，常值）
+不能混用旧版标定参数，也不能把已温补数据再次温补。当前完成的是离线流程；上位机组合导航输入尚未自动接入本次参数，后续接入必须遵循第 3 步。
 
-标定来源：`data/calib24_result.mat`（struct `result`，24 位置转动标定，标定温度 ~30 °C）。
+## 本次数据与选阶
 
-**加速度计**（单位 m/s²）：
+- 原始数据：data/decoded/20260926005735/imu.csv，7,605,132 点，21.1364 h。
+- 标定数据：data/calib24/01.csv 至 24.csv；各文件首尾剔除 10 秒。
+- 原始单位：加计 m/s²，陀螺 deg/h，温度 °C。
+- 参考温度 Tref = 27.44764705882353 °C；拟合范围 27.4418～32.6888 °C。
+- ax、ay、az、gx、gy、gz 阶数分别为 **2、1、3、5、5、5**。
+- 选阶与系数拟合每 50 点取 1 点；应用温补和 Allan 分析使用全量数据。
 
-```
-a_cal = Ca · (a_raw − ba)
-```
+选阶候选为 1～5 阶，使用训练残差标准差相邻阶改善低于 0.1% 的首个平台准则；同时保留 BIC 和块均值指标作为参考。它不是独立验证所得的“最优阶数”，也不等同于以 Allan 方差最小为目标。最高阶达到 5 不证明还应继续增加阶数。
 
-- `ba` = [0.2229, 0.0629, 0.3327] m/s² —— 加速度计零偏
-- `Ca` = 3×3 标度/非正交补偿阵（对角 ≈ [1.00339, 0.99523, 0.97965]，含 ±0.25% 交叉轴项）
+## 公式与参数约定
 
-**陀螺仪**（单位 deg/h）：
+令 dT = T − Tref。每轴拟合包含常数项，但只减去温度变化项：
 
-```
-g_cal = g_raw − gb
-```
+    drift_i(T) = Σ(k=1…order_i) c_i,k × dT^k
+    a_out = Ca × (a_raw − drift_acc(T) − ba)
+    gyro_out_deg_h = gyro_raw_deg_h − drift_gyro(T) − gyroBiasMean_deg_h
+    gyro_out_rad_s = gyro_out_deg_h × π / (180 × 3600)
 
-- `gb` = gyroBiasMean_deg_h = [−33909.1, −2359.3, 5040.5] deg/h —— 24 位置零偏均值
-- 注意：24 位置标定**不含陀螺标度阵/非正交阵**，只补零偏。
+系数矩阵为六行六列，行顺序 ax/ay/az/gx/gy/gz，列顺序 c5/c4/c3/c2/c1/c0，低阶模型的高阶系数补零。**温补时不减 c0**，以保留参考温度下的常值与重力，由标定阶段处理零偏。
 
-### 第二级：3 阶温度模型补偿（温漂，随温度变化）
+先在原始单位完成整条公式，再把陀螺整体转换成 rad/s。不能只转换原始角速度，却仍直接减去 deg/h 单位的温漂或零偏。拟合温区外的补偿尚未经验证，当前分析脚本会拒绝越界数据。
 
-在第一级结果上，去掉温度相关漂移项：
+Ca 是加计测量矩阵 Ma 的逆矩阵。对照图中的 scale 阶段仅除以 Ma 的对角项，用于隔离标度效应；full 阶段采用完整 Ca，包含轴间耦合修正。24 位置静态数据没有提供可靠的陀螺比例因子和非正交矩阵，陀螺只做温补与静态零偏扣除。
 
-```
-dT  = T − T0
-Δb(T) = c1·dT + c2·dT² + c3·dT³
-b_comp = b_cal − Δb(T)
-```
+## Windows 复现命令
 
-- `T` = 当前采样点的 `temp_deg_c`
-- **`T0` = 基准温度 = 采集数据首个温度采样点 = 27.4476 °C**（拟合时选定，使用系数时必须用同一 T0）
-- 常数项 `c0` **不参与补偿**——它是基准温度下的残余零偏（后续由零偏估计/滤波器吸收）
+在 PowerShell 中进入仓库。本次已使用本机 MATLAB R2025b 和科学计算 Python 执行；下面提供可独立复现的虚拟环境方式（需要已安装 Python 3.11 或更高版本；首次安装依赖需要联网）。
 
-### 6 轴温度模型系数（dT = T − 27.4476 °C）
-
-| 轴 | 单位 | c0 | c1 | c2 | c3 |
-|---|---|---:|---:|---:|---:|
-| ax | m/s² | −0.3151 | −4.2847e−3 | −4.1080e−4 | 1.1952e−4 |
-| ay | m/s² | +0.2604 | +2.7953e−5 | −3.1085e−5 | 6.4670e−6 |
-| az | m/s² | +9.8205 | −5.6390e−2 | +2.4536e−2 | −2.9954e−3 |
-| gx | deg/h | −623.72 | +473.80 | +5.8443 | −4.3762 |
-| gy | deg/h | +182.77 | −75.269 | +26.096 | −4.5401 |
-| gz | deg/h | −284.68 | +160.17 | −95.326 | +12.526 |
-
-- 系数文件：`data/decoded/20260926005735/temp_bias_poly3_coeffs.csv`（行序 ax ay az gx gy gz，列 c0 c1 c2 c3 rms_residual）
-- 矩阵文件：`temp_bias_poly3_coeffs.mat`（变量 `coef` 为 6×4 [c3 c2 c1 c0] 顺序、`Tref`、`ba/Ca/gb`）
-- 最小二乘 RMS 残差：加速度计 ~0.014–0.025 m/s²，陀螺 ~112–145 deg/h（含白噪声底，不全是模型误差）
-
----
-
-## 2. 伪代码（嵌入式/上位机实现）
-
-```c
-// 1) 24位标定补偿
-ax_cal = Ca[0][0]*(ax_raw-ba[0]) + Ca[0][1]*(ay_raw-ba[1]) + Ca[0][2]*(az_raw-ba[2]);
-ay_cal = Ca[1][0]*(ax_raw-ba[0]) + Ca[1][1]*(ay_raw-ba[1]) + Ca[1][2]*(az_raw-ba[2]);
-az_cal = Ca[2][0]*(ax_raw-ba[0]) + Ca[2][1]*(ay_raw-ba[1]) + Ca[2][2]*(az_raw-ba[2]);
-gx_cal = gx_raw - gb[0];   // deg/h
-gy_cal = gy_raw - gb[1];
-gz_cal = gz_raw - gb[2];
-
-// 2) 3阶温漂补偿 (T0 = 27.4476, dT = T - T0)
-dT = temp - 27.4476f;
-ax = ax_cal - (TC[0][0]*dT + TC[0][1]*dT*dT + TC[0][2]*dT*dT*dT);
-ay = ay_cal - (TC[1][0]*dT + TC[1][1]*dT*dT + TC[1][2]*dT*dT*dT);
-az = az_cal - (TC[2][0]*dT + TC[2][1]*dT*dT + TC[2][2]*dT*dT*dT);
-gx = gx_cal - (TC[3][0]*dT + TC[3][1]*dT*dT + TC[3][2]*dT*dT*dT);   // deg/h
-gy = gy_cal - (TC[4][0]*dT + TC[4][1]*dT*dT + TC[4][2]*dT*dT*dT);
-gz = gz_cal - (TC[5][0]*dT + TC[5][1]*dT*dT + TC[5][2]*dT*dT*dT);
+```powershell
+Set-Location 'C:\Users\12597\Desktop\lowcost\stm32-mpu6050-f9p-navigation'
+py -3 -m venv .venv-temp
+.\.venv-temp\Scripts\python.exe -m pip install -r tools\requirements_temp_analysis.txt
 ```
 
-MATLAB/Python 向量化形式（行向量 × 转置矩阵）：
+依次执行选阶、拟合、温补后标定。任何一步报错，应停止并排查，不要继续使用旧产物。也可用一键驱动 `run_tempcal_sop.m` 跑完步骤①②（等价于下面三行）：
 
-```matlab
-a_cal = (a_raw - ba) * Ca.';
-dT = temp - 27.4476;
-comp = dT.^3*coef(:,1)' + dT.^2*coef(:,2)' + dT*coef(:,3)';   % 6列各轴温漂项
-Y_out = [a_cal, g_cal] - comp;
+```powershell
+& 'D:\MATLAB2025b\bin\matlab.exe' -wait -nosplash -batch "set(groot,'defaultFigureVisible','off'); run('tools/fit_temp_order_selection.m'); run('tools/fit_temp_bias_raw.m'); run('tools/calib24_static_numbered_tempcomp.m');"
+if ($LASTEXITCODE -ne 0) { throw 'MATLAB pipeline failed' }
+# 或：& 'D:\MATLAB2025b\bin\matlab.exe' -batch "addpath('tools'); run_tempcal_sop"
 ```
 
----
+`run_tempcal_sop.m` 默认执行全部步骤；`run_tempcal_sop('skipStep1',true)` 可复用已有系数只重跑步骤②。
 
-## 3. 文件清单与复现步骤
+然后做步骤③三方案 Allan 对比：
 
-| 文件 | 说明 |
-|---|---|
-| `data/calib24_result.mat` | 24 位置标定结果（ba / Ca / Ma / gyroBiasMean_deg_h 等） |
-| `tools/fit_temp_bias_poly3.m` | 主脚本：读标定→补偿→3阶温漂拟合→三级对比→导出补偿数据 |
-| `data/decoded/20260926005735/temp_bias_poly3_coeffs.csv/.mat` | 6 轴温度模型系数 |
-| `data/decoded/20260926005735/imu_compensated.csv` | 全量"标定+温漂补偿"数据（10 列，含 sample/time_s/dt_s） |
-| `tools/allan_compare_before_after.py` | 温漂补偿前后 Allan 偏差与噪声参数对比 |
-| `data/decoded/20260926005735/allan_compare_before_after/` | 对比图（allan_compare.png / overview）与参数表 CSV/MD |
-
-复现流程：
-
-1. MATLAB 运行 `tools/fit_temp_bias_poly3.m`（耗时主要在读 1.7 GB CSV 与写出补偿 CSV，约几分钟）。
-2. Python 运行 `tools/allan_compare_before_after.py imu_compensated.csv temp_bias_poly3_coeffs.csv`（约 1 分钟）。
-
-`fit_temp_bias_poly3.m` 中的 `decim = 50` 只影响拟合速度（100 Hz→2 Hz 参与最小二乘），补偿输出始终为全分辨率。
-
----
-
-## 4. 效果验证（Allan 方差对比）
-
-温漂补偿前后（21 h 静态，24 位标定基础上）：
-
-- **ARW/VRW 不变**（陀螺 0.19–0.25 deg/√h）——温漂只影响长 τ 区域，短 τ 白噪声不受影响，符合预期；
-- **陀螺 RRW**：gx 89.3→34.2 °/h/√h（**−61.8%**），gy 42.2→26.6（−36.9%）；
-- **Rate Ramp**：gx/gy 补偿后不再检出（温度趋势成功移除）；
-- **加速度计 RRW**：ax/az 改善约 11%；
-- **遗留问题**：gz 的 RRW 反而 +30%（3 阶模型对 gz 长期项改善有限），az 的 Ramp 变大——gz/az 可能需要更高阶模型或引入温度滞后项（热惯性），见第 6 节。
-
----
-
-## 5. 使用注意事项
-
-1. **T0 必须一致**：系数是基于 `dT = T − 27.4476 °C` 拟合的，换算或移植时若用错基准温度，一阶项会引入巨大常值误差。若新数据基准温度不同，需重新拟合（重跑 `.m` 脚本）。
-2. **补偿顺序**：先 24 位标定、后温漂。两级模型是在"标定补偿后的残差"上拟合的，直接对原始数据套用温漂系数不正确。
-3. **c0 不参与温补**：c0 是基准温度下的残余零偏（陀螺 ~±600 °/h，加速度计含重力投影 az≈9.82 m/s²），由对准/零偏估计阶段处理，不要写进温补系数。
-4. **有效温度范围**：拟合数据覆盖约 27.4→35+ °C（21 h 昼夜变化），超出该范围外推时高阶项可能发散，建议限制 dT 外推幅度或对新温度段重新标定。
-5. **单位**：加速度计系数单位为 m/s²（非 mg、非 g），陀螺为 deg/h；换算到 deg/s 时 c1 除以 3600。
-6. **24 位标定的温度局限**：标定在 ~30 °C 恒温下完成，标度/非正交阵本身的温度依赖性未标定；当前模型只覆盖零偏温漂。
-7. **gz/az 残余**：如需进一步压制长期误差，尝试：① 4–5 阶模型（注意过拟合，检查样本外残差）；② 使用温度变化率 dT/dt 滞后项；③ 分温段拟合。
-
----
-
-## 6. 快速核对（单点验算）
-
-任取一采样点做手工验算（示例值仅为格式演示）：
-
-```
-输入: temp = 30.0000 °C, ax_raw = 0.2000 m/s²
-1) a_cal_x = Ca·(a_raw − ba) 的 x 分量
-2) dT = 30.0000 − 27.4476 = 2.5524
-3) Δb_ax = (−4.2847e−3)·2.5524 + (−4.1080e−4)·2.5524² + (1.1952e−4)·2.5524³
-         = −0.010936 − 0.002676 + 0.001990 = −0.011622 m/s²
-4) ax_out = a_cal_x − (−0.011622) = a_cal_x + 0.011622
+```powershell
+$env:OPENBLAS_NUM_THREADS='2'
+$env:OMP_NUM_THREADS='2'
+.\.venv-temp\Scripts\python.exe tools\allan_compare_tc_configs.py data\decoded\20260926005735\imu.csv --coeff data\calib24\temp_coeffs_raw.csv --calib data\calib24\calib24_result_tempcomp_azgxgy.mat --enable 0,0,1,1,1,0
+if ($LASTEXITCODE -ne 0) { throw 'Allan comparison failed' }
 ```
 
-若结果与 `imu_compensated.csv` 对应行一致（±1e-6 量级，受 CSV 写出精度影响），说明实现正确。
+命令从仓库根目录执行，使用脚本默认的本次数据路径。更换数据时先修改两个 MATLAB 温补脚本的输入配置，并检查 Python 的 --help 输入参数；24 位置脚本同样需要配套数据。当前脚本会核对选阶来源、温区、参考温度及标定与温补参数的一致性。
+
+## 输出与复用
+
+data/calib24/ 下：
+
+- temp_order_selection.mat、temp_order_selection.csv、温度模型阶数选择报告.md：选阶结果、评价指标和来源。
+- temp_coeffs_raw.mat、temp_coeffs_raw.csv：原始域**通用温补系数矩阵**；列序 `[c5..c0]`，行序 ax/ay/az/gx/gy/gz，未拟合的轴整行为 0。当前配置 `axisOrder=[0 0 3 5 5 0]`，即矩阵里只保留 az/gx/gy 的系数，ax/ay/gz 整行为 0（等价于不温补）。
+- calib24_result_tempcomp_azgxgy.mat：与当前温补模型配套的完整标定结果；包含温区、处理顺序与来源。
+- calib24_summary_tempcomp_azgxgy.csv：各位置的复核结果。
+
+data/decoded/20260926005735/imu_tempcomp_multiorder.csv 为仅温补的全量物理量数据。
+
+正式 Allan 输出位于 `data/decoded/<session>/allan_compare_tc_configs/`，包含三方案曲线、固定 τ 数值、噪声参数和中文报告。该目录默认属于本地生成结果；如需把某次结果作为示例发布，应明确选择对应会话后单独加入 Git。
+
+以上大体积分析产物在本地生成，不应假定已上传 Git 或部署到树莓派。
+
+## 本次结果与结论
+
+全部 7,605,132 点采用共同时间段和 tau 网格，没有发现断点，没有平滑、重采样或额外去趋势。Allan 计算内部去均值仅用于提高数值稳定性，不改变理论结果。
+
+1000 秒附近的 Allan **偏差**，完整补偿相对原始变化：ax +18.58%、ay −0.37%、az −8.01%、gx −70.66%、gy −21.19%、gz +37.17%。因此不能写“六轴均改善”。方差变化必须用 (补偿后偏差/原始偏差)² − 1 计算。
+
+24 位置重力模长标定残差 RMS：无温补标定 0.944800 mg，先温补再标定 1.016580 mg，并未改善。陀螺位置间离散还包含姿态变化下的地球自转等影响，不能仅凭该指标归因为温补过拟合。
+
+去除常值零偏不改变 Allan 方差；标度调整会缩放曲线数值，不能直接等同于传感器随机噪声降低。长期曲线还可能包含热滞后、其他慢变误差和有限记录长度影响。21h 记录同时用于拟合与评价，因此本次是样本内比较；建议用独立温度循环静态记录验证，尤其关注 ax 与 gz 的长时结果，再决定是否部署当前高阶模型。
+
+Allan 图表中的 mg 使用标准重力 9.80665 m/s² 换算；24 位置拟合采用当地重力 9.7935538578 m/s²。详情见[本次分析报告](../data/allan_results/tempcomp_multistage/comparison.md)。
+
+## 按轴温补开关与三方案 Allan 对比（azgxgy 配置，2026-09-29）
+
+工况前提：GNSS 1 Hz 修正、失锁不超过 600 s；评价重点是 30～1000 s 的 Allan 行为，数小时尺度仅作参考。
+
+按轴配置裁定 `axisOrder = [0 0 3 5 5 0]`（顺序 ax ay az gx gy gz；0 表示该轴不温补）：
+
+- ax、ay：暂停温补（短中期收益不足/无收益），保留静态标定；
+- az：保留 3 阶温补（100～1000 s 有改善，不因 3600 s 变差而否定）；
+- gx、gy：保留 5 阶温补（中长尺度收益明显）；
+- gz：暂停温补（100 s 起劣化；正式系数矩阵中该轴整行为 0）。
+
+`tools/fit_temp_bias_raw.m` 通过 `cfg.axisOrder` 生成唯一权威系数矩阵；`tools/calib24_static_numbered_tempcomp.m` 根据矩阵的非零阶数自动确定有效轴和 `outTag`。当前输出为 `calib24_result_tempcomp_azgxgy.mat`、配套 CSV 与两张图，不覆盖其他配置的结果。配套标定结果（24 位置，ΔT = 0.71 °C）：陀螺位置间 STD gx 71.39→33.67、gy 42.48→41.48、gz 55.67→55.67（未补），单位 deg/h；重力模长 RMS 0.9448→1.0139 mg；`ba` 相对无温补版仅 Z 轴 +3.368 mg，X/Y 与无温补版完全一致。
+
+三方案（raw / raw+TC / raw+TC+calib）Allan 对比用 `tools/allan_compare_tc_configs.py`：
+
+```powershell
+.\.venv-temp\Scripts\python.exe tools\allan_compare_tc_configs.py data\decoded\20260926005735\imu.csv --coeff data\calib24\temp_coeffs_raw.csv --calib data\calib24\calib24_result_tempcomp_azgxgy.mat --enable 0,0,1,1,1,0
+```
+
+输出在 `data/decoded/20260926005735/allan_compare_tc_configs/`（六轴三方案曲线图、固定 τ 表、噪声参数表、报告）。按数据时间戳得到的实际采样率 99.9477 Hz 计算，600 s Allan 偏差（raw → raw+TC → raw+TC+calib）：az 0.1603→0.1374→0.1346 mg（最终改善 16.0%）、gx 24.19→8.66→8.66 °/h（64.2%）、gy 10.20→8.84→8.84 °/h（13.3%）；gz 未启用温补，ax/ay 仅受静态标定矩阵的小幅尺度变换。az 在 3600 s 处约增加 5.2%，与“只保留 100～1000 s 收益”的裁定一致。陀螺 raw+TC 与 raw+TC+calib 的 Allan 曲线重合属预期：常值 `gb` 不改变 Allan 曲线；加速度的常数矩阵 `Ca` 会带来很小的尺度变化，标定的主要作用仍体现在均值、尺度因子和非正交误差层面。
+
+边界：Allan 静态指标不等于失锁位置误差；最终确认需组合导航断星回放（尚未执行）。
+
+## 历史工具
+
+`fit_temp_bias_poly3.m`（旧标定域温补路线）与 `allan_compare_before_after.py` 已从正式工具树删除，历史内容仍可从 Git 旧提交查看。当前正式工具为 `allan_compare_tc_configs.py`（步骤③三方案对比）与 `run_tempcal_sop.m`（步骤①②一键驱动）。不要再使用旧 `imu_compensated.csv`、`imu_tempcomp_raw.csv` 或旧 `poly3` 参数。

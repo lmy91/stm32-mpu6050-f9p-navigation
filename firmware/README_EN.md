@@ -1,4 +1,20 @@
+> 2026-10-02: Protocol v4 uses GNSS4 and WGS84 geodetic height (height_m in meters); hMSL is no longer saved. Legacy GNSS records have blank height_m. See [output contract](../docs/WGS84_HEIGHT.md).
+
 # MPU6050/F9P Navigation Firmware
+
+## File map and snapshot scope (2026-09-30)
+
+| File | Purpose/use |
+| --- | --- |
+| `Src/main.c` | Acquisition, timestamps, UBX parsing and RTCM bridge |
+| `Src/startup_stm32f103xx.S` | Reset and interrupt vectors |
+| `Src/syscall.c`, `Src/sysmem.c` | Bare-metal runtime interfaces |
+| `CMakeLists.txt`, `CMakePresets.json`, `cmake/` | Build/preset/toolchain definitions; use commands below |
+| `stm32f103x8_flash.ld` | Flash/RAM link layout |
+| `build/` | Rebuildable compiler output; excluded from Git |
+
+No firmware/protocol changes in this organization update. GM and KML are [offline tools](../tools/README_EN.md) and [replay](../data/decoded/20260923104556_电动车2/README.md) features, not MCU configuration.
+
 
 [Project home](../README_EN.md) | [中文](README.md) | English
 
@@ -36,7 +52,7 @@ This directory contains STM32F103C8T6 firmware for synchronized MPU6050/ZED-F9P 
 | ST-LINK SWDIO | PA13/SWDIO |
 | ST-LINK SWCLK | PA14/SWCLK |
 | ST-LINK GND | GND |
-| ST-LINK 3.3V | 3.3V |
+| ST-LINK 3.3V | Only for sole-source ST-LINK power; disconnect with external/Pi power |
 
 Keep BOOT0 low and use a common ground. USB-TTL TX must connect to PA10 for RTCM injection. Avoid feeding the board VCC from multiple power sources.
 
@@ -84,7 +100,7 @@ Select the ELF in STM32CubeProgrammer, or run this from the repository root:
 After reset, PA9 emits protocol-v3 synchronization, navigation, sky-view, and RAWX records:
 
     IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
-    GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,hmsl_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
+    GNSS4,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,height_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
     SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used
     SAT_END,gps_week,gps_tow_ms,time_valid,num_svs
     RAWX,gps_week,rcv_tow_f64hex,leap_s,rec_stat,num_meas,total_meas,rx_timer_us

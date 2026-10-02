@@ -39,6 +39,26 @@ class GnssProtocolTests(unittest.TestCase):
         self.assertEqual(row[8:11], [2, 1, 1])
         self.assertEqual(row[14:16], [1.2, 1.8])
         self.assertEqual(row[20], 0.05)
+        self.assertEqual(dict(zip(GNSS_COLUMNS, row))["height_m"], "")
+
+    def test_v4_outputs_only_wgs84_geodetic_height(self) -> None:
+        for height_mm in (73456, -12345, 0):
+            with self.subTest(height_mm=height_mm):
+                line = ("GNSS4,2420,123000,1,987654321,3,25,195,0,2,"
+                        f"399123456,1161234567,{height_mm},1200,1800,10,20,-30,22,50,135")
+                row = parse_gnss(line.split(","))
+                self.assertIsNotNone(row)
+                assert row is not None
+                self.assertEqual(len(row), len(GNSS_COLUMNS))
+                decoded = dict(zip(GNSS_COLUMNS, row))
+                self.assertNotIn("hmsl_m", decoded)
+                self.assertAlmostEqual(decoded["lat_deg"], 39.9123456)
+                self.assertAlmostEqual(decoded["lon_deg"], 116.1234567)
+                self.assertEqual(decoded["height_m"], height_mm / 1000.0)
+                self.assertEqual(decoded["v_acc_m"], 1.8)
+                self.assertEqual(decoded["vel_d_m_s"], -0.03)
+        self.assertIsNone(parse_gnss(line.replace(str(height_mm), "bad-height", 1).split(",")))
+        self.assertIsNone(parse_gnss(f"{line},123".split(",")))
 
     def test_short_gnss_record_is_rejected(self) -> None:
         line = (

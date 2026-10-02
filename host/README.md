@@ -1,4 +1,23 @@
+> 当前GNSS4输出与CSV保存使用WGS84大地高height_m，详见[字段与部署](../docs/WGS84_HEIGHT.md)。旧GNSS记录的大地高留空。
+
 # MPU6050/F9P 组合导航 Qt 上位机
+
+本次离线回归中host共68项，66项通过，2项失败：旧测试期望只生成选择的CSV，而当前实现还始终生成sync.csv。测试与现有记录契约不一致；本次保留并注明，不改GUI实现或掩盖失败。未重新进行串口/RTK硬件验收。
+
+## 文件入口与本版边界（2026-09-30）
+
+| 文件 | 目的/使用 |
+| --- | --- |
+| `imu_serial_qt.py` | GUI、解析、显示和保存；`python host/imu_serial_qt.py` |
+| `serial_worker.py` | 独立串口收发线程，由GUI调用 |
+| `ntrip_rtcm.py` | NTRIP、RTCM验证和MSM兼容处理 |
+| `run_imu_serial_qt.bat` | 本机快捷启动，换电脑检查解释器路径 |
+| `MPU6050_F9P_Navigation.spec` | PyInstaller打包定义，需另装PyInstaller |
+| `requirements.txt` | GUI依赖，按下文安装 |
+| `test_serial_protocol.py`、`test_ntrip_rtcm.py` | `python -X utf8 -m unittest discover -s host -p 'test_*.py'` |
+
+本次不改GUI运行逻辑。实时算法仍用 [fusion配置](../fusion/README.md)，不自动读取MATLAB的新GM参数。1 Hz KML由 [离线回放](../data/decoded/20260923104556_电动车2/README.md) 生成，原始记录格式不变，地图密钥不上传。
+
 
 [项目主页](../README.md) | 中文 | [English](README_EN.md)
 
@@ -83,7 +102,7 @@ NTRIP 使用独立线程、直接 TCP、v2 请求，支持 HTTP chunked。帧经
 输入为 STM32 协议v3的 IMU、导航、天空图和RAWX记录；RAWX由历元头、观测行和历元尾组成：
 
     IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
-    GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,hmsl_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
+    GNSS4,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,height_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
     SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used
     RAWX,gps_week,rcv_tow_f64hex,leap_s,rec_stat,num_meas,total_meas,rx_timer_us
     RAWX_MEAS,gnss_id,sv_id,sig_id,freq_id,pr_f64hex,cp_f64hex,do_f32hex,lock_ms,cno,pr_std,cp_std,do_std,trk_stat

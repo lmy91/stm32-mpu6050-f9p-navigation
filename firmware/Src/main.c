@@ -210,7 +210,7 @@ volatile uint32_t g_debug_nav_flags2;
 volatile uint32_t g_debug_nav_carr_soln;
 volatile int32_t g_debug_nav_lon_e7;
 volatile int32_t g_debug_nav_lat_e7;
-volatile int32_t g_debug_nav_hmsl_mm;
+volatile int32_t g_debug_nav_height_mm;
 volatile uint32_t g_debug_nav_hacc_mm;
 volatile uint32_t g_debug_nav_vacc_mm;
 volatile int32_t g_debug_nav_vel_n_mms;
@@ -631,6 +631,7 @@ static void gnss_send_pubx_port_fallback(void)
 static void gnss_send_navigation_config(void)
 {
     static const gnss_cfg_item_t config[] = {
+        {0x10110061u, 0u, 1u},       /* CFG-NAVSPG-USE_USRDAT: use WGS84 */
         {0x30210001u, 100u, 2u},     /* CFG-RATE-MEAS: 100 ms = 10 Hz */
         {0x30210002u, 1u, 2u},       /* CFG-RATE-NAV: every measurement */
         {0x20210003u, 1u, 1u},       /* CFG-RATE-TIMEREF: GPS */
@@ -748,7 +749,7 @@ static void gnss_dispatch(uint8_t msg_class, uint8_t msg_id,
         g_debug_nav_num_sv = payload[23];
         g_debug_nav_lon_e7 = (int32_t)get_le32(&payload[24]);
         g_debug_nav_lat_e7 = (int32_t)get_le32(&payload[28]);
-        g_debug_nav_hmsl_mm = (int32_t)get_le32(&payload[36]);
+        g_debug_nav_height_mm = (int32_t)get_le32(&payload[32]); /* WGS84 ellipsoid */
         g_debug_nav_hacc_mm = get_le32(&payload[40]);
         g_debug_nav_vacc_mm = get_le32(&payload[44]);
         g_debug_nav_vel_n_mms = (int32_t)get_le32(&payload[48]);
@@ -1082,7 +1083,7 @@ static int16_t i16be(uint8_t high, uint8_t low)
 
 static void print_header(void)
 {
-    uart_puts("# mpu6050_f9p_navigation_protocol_v3\r\n");
+    uart_puts("# mpu6050_f9p_navigation_protocol_v4\r\n");
     uart_puts("# timer=tim2_1mhz_48bit_extended\r\n");
     uart_puts("# pps=f9p_tp_pa0_tim2_ch1_rising\r\n");
     uart_puts("# trigger=mpu6050_data_ready_pa1_tim2_ch2_rising\r\n");
@@ -1099,7 +1100,7 @@ static void print_header(void)
     uart_putc(g_mpu_addr == 0x68u ? '8' : '9');
     uart_puts("\r\n");
     uart_puts("# IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw\r\n");
-    uart_puts("# GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,hmsl_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100\r\n");
+    uart_puts("# GNSS4,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,height_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100\r\n");
     uart_puts("# SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used\r\n");
     uart_puts("# RAWX,gps_week,rcv_tow_f64hex,leap_s,rec_stat,num_meas,total_meas,rx_timer_us\r\n");
     uart_puts("# RAWX_MEAS,gnss_id,sv_id,sig_id,freq_id,pr_f64hex,cp_f64hex,do_f32hex,lock_ms,cno,pr_std,cp_std,do_std,trk_stat\r\n");
@@ -1210,7 +1211,7 @@ static void print_sample(uint32_t sample, uint64_t now,
 
 static void print_gnss(uint16_t week, uint32_t time_valid)
 {
-    uart_puts("GNSS,"); uart_u32(week);
+    uart_puts("GNSS4,"); uart_u32(week);
     uart_putc(','); uart_u32(g_debug_nav_itow_ms);
     uart_putc(','); uart_u32(time_valid);
     uart_putc(','); uart_u64(g_debug_nav_rx_timer_us);
@@ -1221,7 +1222,7 @@ static void print_gnss(uint16_t week, uint32_t time_valid)
     uart_putc(','); uart_u32(g_debug_nav_carr_soln);
     uart_putc(','); uart_i32(g_debug_nav_lat_e7);
     uart_putc(','); uart_i32(g_debug_nav_lon_e7);
-    uart_putc(','); uart_i32(g_debug_nav_hmsl_mm);
+    uart_putc(','); uart_i32(g_debug_nav_height_mm);
     uart_putc(','); uart_u32(g_debug_nav_hacc_mm);
     uart_putc(','); uart_u32(g_debug_nav_vacc_mm);
     uart_putc(','); uart_i32(g_debug_nav_vel_n_mms);
@@ -1335,7 +1336,7 @@ static void print_sync(uint32_t pps_count, uint64_t capture_us,
     uart_puts(",num_sv="); uart_u32(g_debug_nav_num_sv);
     uart_puts(",lat_e7="); uart_i32(g_debug_nav_lat_e7);
     uart_puts(",lon_e7="); uart_i32(g_debug_nav_lon_e7);
-    uart_puts(",hmsl_mm="); uart_i32(g_debug_nav_hmsl_mm);
+    uart_puts(",height_mm="); uart_i32(g_debug_nav_height_mm);
     uart_puts(",vel_n_mms="); uart_i32(g_debug_nav_vel_n_mms);
     uart_puts(",vel_e_mms="); uart_i32(g_debug_nav_vel_e_mms);
     uart_puts(",vel_d_mms="); uart_i32(g_debug_nav_vel_d_mms);

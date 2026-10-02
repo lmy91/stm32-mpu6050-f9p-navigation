@@ -1,0 +1,143 @@
+{
+  "schema_version": 1,
+  "generated_utc": "2026-09-30T06:47:49.949585+00:00",
+  "mode": "pi-reboot-continuous-imu",
+  "estimate_kind": "continuous_power_segment_mean_covariance",
+  "suitable_for_filter_initialization": false,
+  "initialization_rejection_reasons": [
+    "未执行经过验证的 IMU 真正断电再上电",
+    "有效轮数不足 30，属于试跑或小样本",
+    "有效轮次缺少可核查的断电上电记录"
+  ],
+  "valid_runs": 3,
+  "total_runs": 3,
+  "valid_run_indices": [
+    1,
+    2,
+    3
+  ],
+  "valid_run_attempts": [
+    {
+      "index": 1,
+      "attempt": 1
+    },
+    {
+      "index": 2,
+      "attempt": 1
+    },
+    {
+      "index": 3,
+      "attempt": 1
+    }
+  ],
+  "accel_state_coordinate_frame": "fixed calibrated accelerometer sensor frame [ax, ay, az]",
+  "accel_covariance_unit": "(m/s^2)^2",
+  "accel_sigma_unit": "m/s^2",
+  "accel_covariance_m_s2_squared": [
+    [
+      8.839797019718244e-07,
+      8.357553550643499e-08,
+      -4.082291610833679e-07
+    ],
+    [
+      8.357553550643499e-08,
+      4.2977619282529623e-08,
+      -8.598622256918025e-08
+    ],
+    [
+      -4.082291610833679e-07,
+      -8.598622256918025e-08,
+      2.5255157893334743e-07
+    ]
+  ],
+  "accel_covariance_diagonal_m_s2_squared": [
+    8.839797019718244e-07,
+    4.2977619282529623e-08,
+    2.5255157893334743e-07
+  ],
+  "accel_sigma_m_s2": [
+    0.000940201947440987,
+    0.00020731044180776235,
+    0.0005025451013922506
+  ],
+  "accel_sigma_mg": [
+    0.09587391692789964,
+    0.02113978186309926,
+    0.05124533876423148
+  ],
+  "gyro_covariance_unit": "(rad/s)^2",
+  "gyro_covariance_rad_s_squared": [
+    [
+      1.0352155522733773e-08,
+      -6.21908403522587e-10,
+      -2.661839053436404e-10
+    ],
+    [
+      -6.21908403522587e-10,
+      1.1695195895524934e-09,
+      -2.3303354182956725e-10
+    ],
+    [
+      -2.661839053436404e-10,
+      -2.3303354182956725e-10,
+      6.16187282900468e-11
+    ]
+  ],
+  "gyro_sigma_rad_s": [
+    0.00010174554301164141,
+    3.419823956803177e-05,
+    7.849759760021119e-06
+  ],
+  "gyro_sigma_deg_h": [
+    20.986524715801824,
+    7.053893258491857,
+    1.6191291759870097
+  ],
+  "bias_initial_mean": null,
+  "static_mean_contains_gravity": true,
+  "sample_covariance_ddof": 1,
+  "divide_covariance_by_run_count": false,
+  "warmup_seconds_from_first_recorded_sample": 30.0,
+  "window_seconds": 120.0,
+  "window_time_origin": "first recorded IMU sample; not verified IMU power-on time",
+  "processing_order": "raw -> per-sample temperature polynomial excluding c0 -> fixed calibration",
+  "temperature_fit_range_c": [
+    27.441764705882356,
+    32.68882352941176
+  ],
+  "temperature_reference_c": 27.44764705882353,
+  "temperature_active_axes": [
+    "az",
+    "gx",
+    "gy"
+  ],
+  "calibration_input_sha256": {
+    "C:\\Users\\12597\\Desktop\\lowcost\\stm32-mpu6050-f9p-navigation\\data\\turn_on_bias\\20260930_3run_pilot\\calibration\\temp_coeffs_raw.csv": "23a3ac1af949ae8152672133cb11126f81b6adb657a62e0b9f6e1d97867888fd",
+    "C:\\Users\\12597\\Desktop\\lowcost\\stm32-mpu6050-f9p-navigation\\data\\turn_on_bias\\20260930_3run_pilot\\calibration\\temp_coeffs_raw.mat": "497d66c99fd95316928a7046a96019e44b96173416da88a8655dd4e3c088e090",
+    "C:\\Users\\12597\\Desktop\\lowcost\\stm32-mpu6050-f9p-navigation\\data\\turn_on_bias\\20260930_3run_pilot\\calibration\\calib24_result.mat": "fba49434a04825eb0402fb25d3d52b3aa9d9ff44aa3e533e20d16f47af058c5a"
+  },
+  "manifest_snapshot_file": "C:\\Users\\12597\\Desktop\\lowcost\\stm32-mpu6050-f9p-navigation\\data\\turn_on_bias\\20260930_3run_pilot\\analysis\\manifest_snapshot.json",
+  "manifest_sha256": "ebd643fe2a71ab7615dd9ff5ddc0c3ee728eb46738416c55b13528d536f20263",
+  "qc_thresholds": {
+    "block_seconds": 10,
+    "expected_rate_hz": 100,
+    "rate_tolerance": 0.1,
+    "min_coverage": 0.99,
+    "max_accel_std": 0.15,
+    "max_gyro_std": 0.02,
+    "max_gravity_error": 0.5,
+    "max_block_drift": 0.03,
+    "max_temp_slope": 0.2
+  },
+  "experiment_assumptions_to_verify": [
+    "rigid fixed pose",
+    "startup timing representative of filter use",
+    "cold/warm startup conditions representative",
+    "calibrated sensor frame matches filter bias state"
+  ],
+  "limitations": [
+    "finite-window mean noise and residual thermal drift retained",
+    "pose changes indistinguishable from bias without a reference",
+    "small pilot sample is not a final uncertainty estimate"
+  ]
+}

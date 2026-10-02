@@ -1,4 +1,20 @@
+> 当前输出为WGS84大地高，height_m单位米；新版GNSS记录使用GNSS4前缀。详见[字段与部署](../docs/WGS84_HEIGHT.md)。
+
 # MPU6050/F9P 组合导航下位机固件
+
+## 文件入口与本版边界（2026-09-30）
+
+| 文件 | 目的/使用 |
+| --- | --- |
+| `Src/main.c` | 采集、时间关联、UBX解析和RTCM桥接主实现 |
+| `Src/startup_stm32f103xx.S` | 复位和中断向量，随固件链接 |
+| `Src/syscall.c`、`Src/sysmem.c` | 裸机系统调用及内存接口 |
+| `CMakeLists.txt`、`CMakePresets.json`、`cmake/` | 构建与工具链，按下文Release/Debug流程使用 |
+| `stm32f103x8_flash.ld` | Flash/RAM链接布局 |
+| `build/` | 可重建编译产物，不上传 |
+
+本次整理不改固件或协议。新GM和KML属于 [离线工具](../tools/README.md) 与 [MATLAB回放](../data/decoded/20260923104556_电动车2/README.md)，不会因上传而写入STM32。
+
 
 [项目主页](../README.md) | 中文 | [English](README_EN.md)
 
@@ -89,10 +105,10 @@ build/ 是可重建目录，不提交到 Git。
 
     & "$env:LOCALAPPDATA\stm32cube\bundles\programmer\2.23.0\bin\STM32_Programmer_CLI.exe" -c port=SWD mode=UR reset=HWrst -w "firmware\build\Release\mpu6050_f9p_navigation.elf" -v -rst
 
-烧录后复位。PA9 会输出协议v3的同步、导航、天空图和RAWX原始观测记录：
+烧录后复位。PA9 会输出协议v4的同步、导航、天空图和RAWX原始观测记录：
 
     IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
-    GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,hmsl_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
+    GNSS4,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,height_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
     SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used
     SAT_END,gps_week,gps_tow_ms,time_valid,num_svs
     RAWX,gps_week,rcv_tow_f64hex,leap_s,rec_stat,num_meas,total_meas,rx_timer_us
@@ -107,7 +123,7 @@ build/ 是可重建目录，不提交到 Git。
 
 ```text
 # sync,pps=...,timer_us=...,gps_week=...,gps_tow_ms=...,time_valid=...,
-  pvt_itow_ms=...,fix=...,num_sv=...,lat_e7=...,lon_e7=...,hmsl_mm=...,
+  pvt_itow_ms=...,fix=...,num_sv=...,lat_e7=...,lon_e7=...,height_mm=...,
   vel_n_mms=...,vel_e_mms=...,vel_d_mms=...,
   sample_count=...,interrupt_count=...,interrupt_overruns=...,
   cc2_overcapture=...,dt_gap_count=...,i2c_errors=...
@@ -124,7 +140,7 @@ build/ 是可重建目录，不提交到 Git。
 
 `RAWX` 同样为1 Hz。伪距、载波相位和多普勒以IEEE-754位模式十六进制输出，避免单片机浮点格式化并保持接收机原值；`gnss_id/sig_id/freq_id` 标明实际观测信号。最多保存96条观测，`num_meas` 是已输出数，`total_meas` 是接收历元数。固件每个IMU周期最多发送一条RAWX记录，使460800日志串口持续畅通。
 
-`RXM-SFRBX`仅存在于F9P UART1原始UBX字节流中，STM32会完成校验但不转换成协议v3文本。树莓派通过GPIO5/RXD2旁路保存这些字节；`RAWX + SFRBX`分别为后续生成RINEX观测文件和导航文件提供输入。
+`RXM-SFRBX`仅存在于F9P UART1原始UBX字节流中，STM32会完成校验但不转换成协议v4文本。树莓派通过GPIO5/RXD2旁路保存这些字节；`RAWX + SFRBX`分别为后续生成RINEX观测文件和导航文件提供输入。
 
 ## 工作原理
 
