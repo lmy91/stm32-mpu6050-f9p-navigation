@@ -1,6 +1,6 @@
 # 21 h静态会话：精选分析结果
 
-[数据索引](../../README.md) | [GM验证说明](../../../tools/GM_VALIDATION.md)
+[数据索引](../../README.md) | [GM验证说明](../../../tools/noise_analysis/GM_VALIDATION.md)
 
 本目录保存20260926005735静态记录的脚本和正式分析产物，
 **不包含**原始 `imu.csv`、RAWX/UBX或全速率 `imu_tempcomp_multiorder.csv`。
@@ -24,11 +24,11 @@
 在根目录，仅重绘已有验证：
 
 ```matlab
-addpath('tools');
+addpath('tools'); setup_tools;
 gm_validate_parameters(struct('replotOnly',true));
 ```
 
-重拟合需恢复本目录imu.csv，运行 `run('tools/gm_autocorrelation_analysis.m')`。
+重拟合需恢复本目录imu.csv，运行 `run('tools/noise_analysis/gm_autocorrelation_analysis.m')`。
 默认独立验证还需恢复20260921140624和20260921121352的静态原始记录。
 10秒平均只抑制短端白噪声，工具做块平均传递函数修正；不能保证单阶GM适用于30～600秒。
 参数要与验证summary一起阅读，不能只看自相关曲线拟合。

@@ -1,6 +1,6 @@
 # STM32 MPU6050/F9P 组合导航实验系统
 
-## 2026-09-30 整理版：入口与复现范围
+## 2026-10-02 整理版：入口与复现范围
 
 | 目录/入口 | 文件目的 | 使用方法 |
 | --- | --- | --- |
@@ -9,13 +9,16 @@
 | [fusion/](fusion/README.md) | Python实时对准和15状态松组合 | 通过Qt启动，参数在 `self_aim_config.json` |
 | [tools/](tools/README.md) | 质检、温补/标定、Allan、GM、重复性和KML | 按工具说明选择Python/MATLAB入口 |
 | [data/](data/README.md) | 发布的数据、冻结参数、结果索引 | 电动车数据可回放；长时原始记录需另行补齐 |
-| [电动车test](data/decoded/20260923104556_电动车2/README.md) | MATLAB/PSINS回放和静态对照 | 配置外部PSINS后运行 `test.m`，自动输出1 Hz KML |
+| [电动车test](data/decoded/20260923104556_电动车2/README.md) | MATLAB/PSINS回放和静态对照 | 配置外部PSINS后运行会话内 `code/navigation/test.m`，自动输出1 Hz KML |
+| [WUH2 下载工具](tools/station_observation_downloader/README.md) | 按流动站时段下载基站观测，可选全天观测和广播星历 | 双击 `tools/station_observation_downloader/run_gui.bat` |
 | [docs/](docs/README.md) | 接线、同步、标定流程及限制 | 先读 [当前版本指南](docs/版本整理与使用指南_20260930.md) |
 | [raspberry_pi5/](raspberry_pi5/README.md) | 历史/开发参考 | 正式部署使用独立Pi仓库 |
 
 本版补齐test的Allan/GM参数、GM验证结果、24位置输入和实验图表。离线MATLAB已使用温补与标定；实时Python仍使用自身JSON配置，不自动读取这些离线参数。本次整理不修改固件或实时滤波器。
 GM参数仍是候选工程模型，拟合成功不等于30～600秒尺度或独立记录验证通过。历史GM/RW比较脚本也不等同于最新版test。
 21 h和独立长记录原始文件、全速率温补CSV、密钥、缓存和自动备份继续留在本地，未删除。
+
+2026-10-02 更新增加 Qt 下载工具，并将电动车会话中的脚本、MAT/CSV 结果和说明分别归入 `code/`、`results/` 和 `docs/`。发布匹配时段基站观测和当天广播星历；约 1.37 GB 的全天观测留在本地，可用工具勾选下载。详见 [本次更新说明](docs/下载工具与会话目录更新_20261002.md)。
 
 
 [中文](README.md) | [English](README_EN.md)
@@ -222,10 +225,10 @@ Qt 做 HTTP chunk 解包和 RTCM CRC24Q 校验，仅下发完整有效帧；STM3
 
 ```powershell
 # 分别保存 IMU/GNSS，0 小时表示持续到 Ctrl+C
-D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 0
+D:\anaconda\envs\allan-toolkit\python.exe tools\acquisition\capture_serial.py COM7 --hours 0
 
 # 当前21列IMU v3可直接用于Allan分析
-D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py data\decoded\20260908180500\imu.csv --rate 100 --skip-minutes 30
+D:\anaconda\envs\allan-toolkit\python.exe tools\noise_analysis\allan_noise_identification.py data\decoded\20260908180500\imu.csv --rate 100 --skip-minutes 30
 ```
 
 详细说明见 [硬件接线详解](docs/硬件接线详解.md)、[时间同步方案总结](docs/时间同步方案总结.md)、[固件](firmware/README.md)、[Qt 上位机](host/README.md)、[工具](tools/README.md)、[组合导航算法规划](fusion/README.md)、[已知问题与后续加固](docs/KNOWN_ISSUES.md)、[Allan 方差说明](docs/Allan方差知识总结.md) 和 [IMU 丢数可观测性与 TIM2 加固总结](docs/IMU丢数可观测性与TIM2加固总结.md)。

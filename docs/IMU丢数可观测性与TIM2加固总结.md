@@ -113,10 +113,10 @@ sample_count 增量 < interrupt_count 增量  →  有捕获事件未形成成�
 
 ### 2B：PC 端解析落盘（冻结）
 
-- `tools/capture_serial.py` 与 `host/imu_serial_qt.py` 各新增 `parse_sync` / `u32_delta`；
+- `tools/acquisition/capture_serial.py` 与 `host/imu_serial_qt.py` 各新增 `parse_sync` / `u32_delta`；
 - 采集会话目录**始终生成 `sync.csv`**（每秒一行，13 列：`unix_ms, pps, 6 累计值, 4 增量, backlog`），独立于 `--save` 选择；
 - Qt 侧 `_process_sync` 每秒即时 flush，保证异常退出最多损失约 1 秒诊断记录；
-- `tools/check_sync.py` 只读核对 `sync.csv` 完整性。
+- `tools/quality_control/check_sync.py` 只读核对 `sync.csv` 完整性。
 
 ### 2C：Qt 状态栏告警（冻结）
 
@@ -161,7 +161,7 @@ sample_count 增量 < interrupt_count 增量  →  有捕获事件未形成成�
 | 诊断变量声明 | `firmware/Src/main.c`（`g_debug_*` 区） |
 | `# sync` 六字段输出 | `firmware/Src/main.c` `print_sync` |
 | dt>15ms 缺口计数 | `firmware/Src/main.c` 主循环（`dt` 计算后） |
-| sync.csv 落盘 + 差分 | `tools/capture_serial.py`（`parse_sync`/`u32_delta`/`CsvRecorder`） |
+| sync.csv 落盘 + 差分 | `tools/acquisition/capture_serial.py`（`parse_sync`/`u32_delta`/`CsvRecorder`） |
 | Qt 解析 + 状态栏告警 | `host/imu_serial_qt.py`（`_process_sync`/`_update_capture_status`） |
-| sync.csv 核对工具 | `tools/check_sync.py` |
+| sync.csv 核对工具 | `tools/quality_control/check_sync.py` |
 | 字段与语义文档 | `tools/README.md`、`host/README.md`、`firmware/README.md` |

@@ -2,7 +2,7 @@
 
 更新日期：2026-09-29。本说明取代旧版“先标定再温补”说明。
 
-> **怎么操作** → 见 [温补标定 SOP](温补标定SOP.md)（正式流程、命令、参数契约与禁止事项）；本文解释**为什么**这样做（原理、公式与结论边界）。步骤①②已可用 `tools/run_tempcal_sop.m` 一键跑通。
+> **怎么操作** → 见 [温补标定 SOP](温补标定SOP.md)（正式流程、命令、参数契约与禁止事项）；本文解释**为什么**这样做（原理、公式与结论边界）。步骤①②已可用 `tools/calibration/run_tempcal_sop.m` 一键跑通。
 
 ## 唯一处理顺序
 
@@ -51,9 +51,9 @@ py -3 -m venv .venv-temp
 依次执行选阶、拟合、温补后标定。任何一步报错，应停止并排查，不要继续使用旧产物。也可用一键驱动 `run_tempcal_sop.m` 跑完步骤①②（等价于下面三行）：
 
 ```powershell
-& 'D:\MATLAB2025b\bin\matlab.exe' -wait -nosplash -batch "set(groot,'defaultFigureVisible','off'); run('tools/fit_temp_order_selection.m'); run('tools/fit_temp_bias_raw.m'); run('tools/calib24_static_numbered_tempcomp.m');"
+& 'D:\MATLAB2025b\bin\matlab.exe' -wait -nosplash -batch "set(groot,'defaultFigureVisible','off'); run('tools/calibration/fit_temp_order_selection.m'); run('tools/calibration/fit_temp_bias_raw.m'); run('tools/calibration/calib24_static_numbered_tempcomp.m');"
 if ($LASTEXITCODE -ne 0) { throw 'MATLAB pipeline failed' }
-# 或：& 'D:\MATLAB2025b\bin\matlab.exe' -batch "addpath('tools'); run_tempcal_sop"
+# 或：& 'D:\MATLAB2025b\bin\matlab.exe' -batch "addpath('tools'); setup_tools; run_tempcal_sop"
 ```
 
 `run_tempcal_sop.m` 默认执行全部步骤；`run_tempcal_sop('skipStep1',true)` 可复用已有系数只重跑步骤②。
@@ -63,7 +63,7 @@ if ($LASTEXITCODE -ne 0) { throw 'MATLAB pipeline failed' }
 ```powershell
 $env:OPENBLAS_NUM_THREADS='2'
 $env:OMP_NUM_THREADS='2'
-.\.venv-temp\Scripts\python.exe tools\allan_compare_tc_configs.py data\decoded\20260926005735\imu.csv --coeff data\calib24\temp_coeffs_raw.csv --calib data\calib24\calib24_result_tempcomp_azgxgy.mat --enable 0,0,1,1,1,0
+.\.venv-temp\Scripts\python.exe tools\noise_analysis\allan_compare_tc_configs.py data\decoded\20260926005735\imu.csv --coeff data\calib24\temp_coeffs_raw.csv --calib data\calib24\calib24_result_tempcomp_azgxgy.mat --enable 0,0,1,1,1,0
 if ($LASTEXITCODE -ne 0) { throw 'Allan comparison failed' }
 ```
 
@@ -94,7 +94,7 @@ data/decoded/20260926005735/imu_tempcomp_multiorder.csv 为仅温补的全量物
 
 去除常值零偏不改变 Allan 方差；标度调整会缩放曲线数值，不能直接等同于传感器随机噪声降低。长期曲线还可能包含热滞后、其他慢变误差和有限记录长度影响。21h 记录同时用于拟合与评价，因此本次是样本内比较；建议用独立温度循环静态记录验证，尤其关注 ax 与 gz 的长时结果，再决定是否部署当前高阶模型。
 
-Allan 图表中的 mg 使用标准重力 9.80665 m/s² 换算；24 位置拟合采用当地重力 9.7935538578 m/s²。详情见[本次分析报告](../data/allan_results/tempcomp_multistage/comparison.md)。
+Allan 图表中的 mg 使用标准重力 9.80665 m/s² 换算；24 位置拟合采用当地重力 9.7935538578 m/s²。当前三方案结果见[温补配置 Allan 对比报告](../data/decoded/20260926005735/allan_compare_tc_configs/温补配置Allan对比报告.md)。
 
 ## 按轴温补开关与三方案 Allan 对比（azgxgy 配置，2026-09-29）
 
@@ -107,12 +107,12 @@ Allan 图表中的 mg 使用标准重力 9.80665 m/s² 换算；24 位置拟合�
 - gx、gy：保留 5 阶温补（中长尺度收益明显）；
 - gz：暂停温补（100 s 起劣化；正式系数矩阵中该轴整行为 0）。
 
-`tools/fit_temp_bias_raw.m` 通过 `cfg.axisOrder` 生成唯一权威系数矩阵；`tools/calib24_static_numbered_tempcomp.m` 根据矩阵的非零阶数自动确定有效轴和 `outTag`。当前输出为 `calib24_result_tempcomp_azgxgy.mat`、配套 CSV 与两张图，不覆盖其他配置的结果。配套标定结果（24 位置，ΔT = 0.71 °C）：陀螺位置间 STD gx 71.39→33.67、gy 42.48→41.48、gz 55.67→55.67（未补），单位 deg/h；重力模长 RMS 0.9448→1.0139 mg；`ba` 相对无温补版仅 Z 轴 +3.368 mg，X/Y 与无温补版完全一致。
+`tools/calibration/fit_temp_bias_raw.m` 通过 `cfg.axisOrder` 生成唯一权威系数矩阵；`tools/calibration/calib24_static_numbered_tempcomp.m` 根据矩阵的非零阶数自动确定有效轴和 `outTag`。当前输出为 `calib24_result_tempcomp_azgxgy.mat`、配套 CSV 与两张图，不覆盖其他配置的结果。配套标定结果（24 位置，ΔT = 0.71 °C）：陀螺位置间 STD gx 71.39→33.67、gy 42.48→41.48、gz 55.67→55.67（未补），单位 deg/h；重力模长 RMS 0.9448→1.0139 mg；`ba` 相对无温补版仅 Z 轴 +3.368 mg，X/Y 与无温补版完全一致。
 
-三方案（raw / raw+TC / raw+TC+calib）Allan 对比用 `tools/allan_compare_tc_configs.py`：
+三方案（raw / raw+TC / raw+TC+calib）Allan 对比用 `tools/noise_analysis/allan_compare_tc_configs.py`：
 
 ```powershell
-.\.venv-temp\Scripts\python.exe tools\allan_compare_tc_configs.py data\decoded\20260926005735\imu.csv --coeff data\calib24\temp_coeffs_raw.csv --calib data\calib24\calib24_result_tempcomp_azgxgy.mat --enable 0,0,1,1,1,0
+.\.venv-temp\Scripts\python.exe tools\noise_analysis\allan_compare_tc_configs.py data\decoded\20260926005735\imu.csv --coeff data\calib24\temp_coeffs_raw.csv --calib data\calib24\calib24_result_tempcomp_azgxgy.mat --enable 0,0,1,1,1,0
 ```
 
 输出在 `data/decoded/20260926005735/allan_compare_tc_configs/`（六轴三方案曲线图、固定 τ 表、噪声参数表、报告）。按数据时间戳得到的实际采样率 99.9477 Hz 计算，600 s Allan 偏差（raw → raw+TC → raw+TC+calib）：az 0.1603→0.1374→0.1346 mg（最终改善 16.0%）、gx 24.19→8.66→8.66 °/h（64.2%）、gy 10.20→8.84→8.84 °/h（13.3%）；gz 未启用温补，ax/ay 仅受静态标定矩阵的小幅尺度变换。az 在 3600 s 处约增加 5.2%，与“只保留 100～1000 s 收益”的裁定一致。陀螺 raw+TC 与 raw+TC+calib 的 Allan 曲线重合属预期：常值 `gb` 不改变 Allan 曲线；加速度的常数矩阵 `Ca` 会带来很小的尺度变化，标定的主要作用仍体现在均值、尺度因子和非正交误差层面。

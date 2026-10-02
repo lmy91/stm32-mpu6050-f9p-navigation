@@ -1,6 +1,6 @@
 # IMU零偏重复性：工具与试跑归档
 
-[数据索引](../README.md) | [完整采集/分析方法](../../tools/TURN_ON_BIAS.md)
+[数据索引](../README.md) | [完整采集/分析方法](../../tools/repeatability/TURN_ON_BIAS.md)
 
 已发布 `20260930_3run_pilot/` 的分析结果、实验清单和标定快照，未发布其runs原始数据。
 此批次是 **IMU连续通电、仅树莓派重启的三轮对照**，不是经过确认的断电上电重复性；
@@ -20,7 +20,7 @@
 重新分析要恢复各轮原始imu.csv和sync.csv，再在根目录运行：
 
 ```powershell
-python tools/analyze_turn_on_bias.py --experiment data/turn_on_bias/20260930_3run_pilot --coeff data/turn_on_bias/20260930_3run_pilot/calibration/temp_coeffs_raw.mat --calib data/turn_on_bias/20260930_3run_pilot/calibration/calib24_result.mat
+python tools/repeatability/analyze_turn_on_bias.py --experiment data/turn_on_bias/20260930_3run_pilot --coeff data/turn_on_bias/20260930_3run_pilot/calibration/temp_coeffs_raw.mat --calib data/turn_on_bias/20260930_3run_pilot/calibration/calib24_result.mat
 ```
 
 正式重复性需另建真正IMU断电上电的批次，固定姿态和等待时间、保存依据并采集至少30个合格周期。

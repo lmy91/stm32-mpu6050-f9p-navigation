@@ -21,7 +21,7 @@
 在根目录MATLAB运行：
 
 ```matlab
-addpath('tools');
+addpath('tools'); setup_tools;
 run_tempcal_sop('skipStep1',true); % 复用温补，重做24位置标定；覆盖对应输出
 ```
 

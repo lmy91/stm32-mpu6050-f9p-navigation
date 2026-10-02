@@ -1,4 +1,4 @@
-# MPU6050/F9P 数据采集与 Allan 分析工具
+# MPU6050/F9P 工具索引
 
 Windows命令行建议使用 `python -X utf8` 运行带中文或²单位的统计工具，避免默认GBK输出失败。测试使用下文discover命令，将host/tools加入正确的模块搜索路径，不用包形式导入旧测试。
 
@@ -8,29 +8,46 @@ Windows命令行建议使用 `python -X utf8` 运行带中文或²单位的统�
 
 ## 工具
 
-多阶温补与标定的**唯一正式流程**见 [温补标定 SOP](../docs/温补标定SOP.md)：① `fit_temp_order_selection.m` → ① `fit_temp_bias_raw.m` → ② `calib24_static_numbered_tempcomp.m` → ③ `allan_compare_tc_configs.py`。步骤①②可用 `run_tempcal_sop.m` 一键跑通。理论背景见 [IMU温度补偿使用说明](../docs/IMU温度补偿使用说明.md)。
+2026-10-02 已按用途分类，原工具根目录中的脚本迁入下表对应目录；依赖清单和下载工具源码 ZIP 保留在根目录。命令均从仓库根目录运行。
+
+| 目录 | 内容与说明 |
+| --- | --- |
+| [acquisition/](acquisition/README.md) | 串口采集、RAWX 解码、F9P 查询及 Python 测试 |
+| [quality_control/](quality_control/README.md) | 会话质量、同步计数和 RTCM 链路检查 |
+| [calibration/](calibration/README.md) | 温度选阶、温补拟合、24位置标定及 SOP |
+| [noise_analysis/](noise_analysis/README.md) | Allan 对比、GM 自相关辨识与参数复核 |
+| [repeatability/](repeatability/README.md) | 手动断电上电后的零偏重复性分析 |
+| [visualization/](visualization/README.md) | KML 导出及 MATLAB 测试 |
+| [station_observation_downloader/](station_observation_downloader/README.md) | Qt 基站观测与广播星历下载工具 |
+| [legacy/](legacy/README.md) | 历史 BNC、时序、新息与绘图辅助 |
+
+MATLAB 函数首次使用前执行 `addpath('tools'); setup_tools;`。Python 脚本使用分类后的完整路径。树莓派历史服务入口同步改为 `tools/acquisition/capture_serial.py`；已安装的服务需更新服务配置。独立生产仓库的更新流程不受此目录整理影响。
+
+WUH2 基站 1秒观测一键下载与合并工具见 [station_observation_downloader](station_observation_downloader/README.md)。双击该文件夹中的 `run_gui.bat` 打开 Qt 界面；默认只下载覆盖流动站时段的最少分段，在流动站文件夹生成匹配时段观测，全天观测和广播星历可分别勾选。处理中可关闭窗口停止任务，下次复用有效文件。源码打包为 `station_observation_downloader.zip`。
+
+多阶温补与标定的**唯一正式流程**见 [温补标定 SOP](../docs/温补标定SOP.md)：① `calibration/fit_temp_order_selection.m` → ① `calibration/fit_temp_bias_raw.m` → ② `calibration/calib24_static_numbered_tempcomp.m` → ③ `noise_analysis/allan_compare_tc_configs.py`。步骤①②可用 `calibration/run_tempcal_sop.m` 一键跑通。理论背景见 [IMU温度补偿使用说明](../docs/IMU温度补偿使用说明.md)。
 
 旧的 `allan_compare_before_after.py`、`fit_temp_bias_poly3.m` 及其标定域产物已从正式工具树删除。当前系数文件为 `temp_coeffs_raw.{mat,csv}`，阶数由拟合脚本的 `cfg.axisOrder` 决定；未拟合轴整行为 0。
 
 | 文件 | 用途 | 默认输出 |
 | --- | --- | --- |
-| `capture_serial.py` | 无界面采集 | 会话文件夹中的 IMU、GNSS导航、RAWX CSV |
-| `decode_rawx.py` | 校验并汇总 RAWX 原始观测 | 历元完整性、信号质量、锁定回退和相位-多普勒异常候选 |
-| `check_rtcm_bridge.py` | 调用同一 Qt 代码短时检查 RTCM 链路 | 控制台统计，不生成文件 |
-| `inspect_f9p.py` | 在 F9P 原生 USB 口只读查询 UBX 状态 | 控制台摘要，`--details` 显示逐信号状态 |
-| `allan_noise_identification.py` | 直接读取标准 IMU CSV，辨识 Allan 随机误差 | `data/allan_results/` |
-| `allan_compare_tc_configs.py` | 温补/标定三方案 Allan 对比（raw / raw+TC / raw+TC+calib） | `data/decoded/<session>/allan_compare_tc_configs/` |
-| `run_tempcal_sop.m` | 一键跑通 SOP 步骤①（选阶+拟合系数）与步骤②（温补+24 位置标定） | `data/calib24/` 下全部温补标定产物 |
-| `check_sync.py` | 核对 sync.csv 诊断文件完整性 | 控制台统计，不生成文件 |
-| `analyze_turn_on_bias.py` | 手动上电采集后的温补标定、跨轮均值散布、质量检查和协方差 | 实验目录内的汇总、图表及中文报告；[使用说明](TURN_ON_BIAS.md) |
-| `fit_temp_order_selection.m` | 逐轴1～5阶比较，推荐阶数仅供参考 | `temp_order_selection.*`、报告及图 |
-| `fit_temp_bias_raw.m` | 原始域温补系数拟合；配置 `axisOrder` 是权威开关 | 温补MAT/CSV、全速率温补CSV及对照图 |
-| `calib24_static_numbered_tempcomp.m` | 24位置逐样本先温补再标定 | 绑定温补配置的加计标定MAT、CSV及图 |
-| `calib24_static_numbered.m` | 无温补24位置标定参考，不是当前test默认参数 | 原始域标定结果 |
-| `gm_autocorrelation_analysis.m` | 温补标定后六轴ACF，10秒块平均传递函数修正 | 六轴GM候选参数CSV、块序列、MAT及自相关图 |
-| `gm_validate_parameters.m` | 分段、去趋势、独立记录和30～600秒尺度复核 | 独立 `gm_validation/`，不覆盖原GM参数 |
-| `position_to_kml.m` | PSINS位置按秒插值为KML，不需Mapping Toolbox | KML及返回的1 Hz位置/时间 |
-| `tests/test_position_to_kml.m` | KML单位、XML、插值及边界回归 | 控制台通过/失败；临时测试文件自动清理 |
+| `acquisition/capture_serial.py` | 无界面采集 | 会话文件夹中的 IMU、GNSS导航、RAWX CSV |
+| `acquisition/decode_rawx.py` | 校验并汇总 RAWX 原始观测 | 历元完整性、信号质量、锁定回退和相位-多普勒异常候选 |
+| `quality_control/check_rtcm_bridge.py` | 调用同一 Qt 代码短时检查 RTCM 链路 | 控制台统计，不生成文件 |
+| `acquisition/inspect_f9p.py` | 在 F9P 原生 USB 口只读查询 UBX 状态 | 控制台摘要，`--details` 显示逐信号状态 |
+| `noise_analysis/allan_noise_identification.py` | 直接读取标准 IMU CSV，辨识 Allan 随机误差 | `data/allan_results/` |
+| `noise_analysis/allan_compare_tc_configs.py` | 温补/标定三方案 Allan 对比（raw / raw+TC / raw+TC+calib） | `data/decoded/<session>/allan_compare_tc_configs/` |
+| `calibration/run_tempcal_sop.m` | 一键跑通 SOP 步骤①（选阶+拟合系数）与步骤②（温补+24 位置标定） | `data/calib24/` 下全部温补标定产物 |
+| `quality_control/check_sync.py` | 核对 sync.csv 诊断文件完整性 | 控制台统计，不生成文件 |
+| `repeatability/analyze_turn_on_bias.py` | 手动上电采集后的温补标定、跨轮均值散布、质量检查和协方差 | 实验目录内的汇总、图表及中文报告；[使用说明](repeatability/TURN_ON_BIAS.md) |
+| `calibration/fit_temp_order_selection.m` | 逐轴1～5阶比较，推荐阶数仅供参考 | `temp_order_selection.*`、报告及图 |
+| `calibration/fit_temp_bias_raw.m` | 原始域温补系数拟合；配置 `axisOrder` 是权威开关 | 温补MAT/CSV、全速率温补CSV及对照图 |
+| `calibration/calib24_static_numbered_tempcomp.m` | 24位置逐样本先温补再标定 | 绑定温补配置的加计标定MAT、CSV及图 |
+| `calibration/calib24_static_numbered.m` | 无温补24位置标定参考，不是当前test默认参数 | 原始域标定结果 |
+| `noise_analysis/gm_autocorrelation_analysis.m` | 温补标定后六轴ACF，10秒块平均传递函数修正 | 六轴GM候选参数CSV、块序列、MAT及自相关图 |
+| `noise_analysis/gm_validate_parameters.m` | 分段、去趋势、独立记录和30～600秒尺度复核 | 独立 `gm_validation/`，不覆盖原GM参数 |
+| `visualization/position_to_kml.m` | PSINS位置按秒插值为KML，不需Mapping Toolbox | KML及返回的1 Hz位置/时间 |
+| `visualization/tests/test_position_to_kml.m` | KML单位、XML、插值及边界回归 | 控制台通过/失败；临时测试文件自动清理 |
 
 ## 本版运行顺序与依赖（2026-09-30）
 
@@ -39,28 +56,28 @@ MATLAB动态/静态INS脚本需要外部PSINS并先执行其路径初始化；�
 
 1. 只复现电动车回放：直接使用已发布参数，按 [会话README](../data/decoded/20260923104556_电动车2/README.md) 运行test，无需重做21 h拟合。
 2. 重新拟合：补齐21 h `imu.csv`，确认轴阶数后执行温补SOP；24位置01～24输入本版已发布。
-3. GM辨识与默认独立验证需要另外补齐长时原始记录。仅查看已发布结果或重绘缓存不要求原始CSV，见 [GM说明](GM_VALIDATION.md)。
+3. GM辨识与默认独立验证需要另外补齐长时原始记录。仅查看已发布结果或重绘缓存不要求原始CSV，见 [GM说明](noise_analysis/GM_VALIDATION.md)。
 4. 上电重复性必须另采真正断电上电的数据；已发布三轮试跑仅为连续通电对照。
 
 ```matlab
-addpath('tools');
+addpath('tools'); setup_tools;
 run_tempcal_sop('skipStep1',true); % 复用冻结温补，重做24位置标定；会覆盖标定输出
 % 以下两行需要补齐21 h和独立记录，不是下载后即可全流程重算：
-% run('tools/gm_autocorrelation_analysis.m');
+% run('tools/noise_analysis/gm_autocorrelation_analysis.m');
 % results = gm_validate_parameters;
 gm_validate_parameters(struct('replotOnly',true)); % 已发布验证MAT重绘
-addpath('tools/tests'); test_position_to_kml;
+addpath('tools/visualization/tests'); test_position_to_kml;
 ```
 
 ### 辅助与历史工具
 
 | 文件 | 目的/使用限制 |
 | --- | --- |
-| `analyze_latest_data.py` | 会话汇总质检；`python tools/analyze_latest_data.py <会话目录>`，不传目录会选本地最新会话 |
-| `bnc_direct_proxy.py` | BNC本机直连代理；仅用于旧BNC链路，`--help`查看端口，Qt直连NTRIP不需要它 |
-| `deep_dive_timing.py`、`innovation_dive.py` | 历史AIM时序/新息诊断；文件顶部硬编码本机目录，先修改并补齐记录再运行 |
-| `extract_viz_data.py`、`gen_viz_html.py` | 历史下采样与HTML绘图辅助；先检查顶部数据/输出路径，不属于正式温补SOP |
-| `test_capture_serial.py`、`test_decode_rawx.py` | `python -X utf8 -m unittest discover -s tools -p 'test_*.py'` |
+| `quality_control/analyze_latest_data.py` | 会话汇总质检；`python tools/quality_control/analyze_latest_data.py <会话目录>`，不传目录会选本地最新会话 |
+| `legacy/bnc_direct_proxy.py` | BNC本机直连代理；仅用于旧BNC链路，`--help`查看端口，Qt直连NTRIP不需要它 |
+| `legacy/deep_dive_timing.py`、`legacy/innovation_dive.py` | 历史AIM时序/新息诊断；文件顶部硬编码本机目录，先修改并补齐记录再运行 |
+| `legacy/extract_viz_data.py`、`legacy/gen_viz_html.py` | 历史下采样与HTML绘图辅助；先检查顶部数据/输出路径，不属于正式温补SOP |
+| `acquisition/test_capture_serial.py`、`acquisition/test_decode_rawx.py` | `python -X utf8 -m unittest discover -s tools/acquisition -p 'test_*.py'` |
 | `requirements.txt`、`requirements_temp_analysis.txt` | 分别安装采集/Allan和温补统计依赖 |
 
 参数MAT/CSV是冻结实验资产，重新运行拟合/分析会覆盖对应输出；换轴开关后必须整套重标定，不可混用。最新文件用途、上传范围与实验边界见 [版本指南](../docs/版本整理与使用指南_20260930.md)。
@@ -69,9 +86,9 @@ addpath('tools/tests'); test_position_to_kml;
 
 `check_rtcm_bridge.py --stall-gui` 每十秒暂停 GUI 处理半秒，检查独立串口线程是否继续转发。输出重连次数、字节队列峰值、最长发送排队时间、MSM 不完整组丢弃计数及基站 MSM 头信息；可用 `--seconds 180` 做三分钟压力测试。MSM 的 `epoch_raw_ms` 保留原星座时间尺度：北斗转 GPS 需加 14 秒，GLONASS 字段为星期/日内毫秒组合，不能直接与 GPS 周内毫秒相减。测试摘要中的基站 ECEF 坐标是公开基站坐标，不输出流动站坐标。
 
-`python tools/inspect_f9p.py COM3` 仅查询接收机原生 USB 的状态/配置，不写 VALSET、不复位、不注入 RTCM。`config_response_received=false` 表示本次没有收到配置查询响应，不能当作配置值为零；COM3 必须由设备枚举确认，不能用 COM7 替代。
+`python tools/acquisition/inspect_f9p.py COM3` 仅查询接收机原生 USB 的状态/配置，不写 VALSET、不复位、不注入 RTCM。`config_response_received=false` 表示本次没有收到配置查询响应，不能当作配置值为零；COM3 必须由设备枚举确认，不能用 COM7 替代。
 
-`capture_serial.py` 在普通PC命令行模式下保持纯采集；树莓派服务显式配置
+`acquisition/capture_serial.py` 在普通PC命令行模式下保持纯采集；树莓派服务显式配置
 `--ntrip-control`后，可在同一串口所有者内建立NTRIP并处理`#RTCM`信用反馈。
 Qt、树莓派采集器或其他串口程序仍不能同时打开同一个端口。
 
@@ -80,7 +97,7 @@ Qt、树莓派采集器或其他串口程序仍不能同时打开同一个端口
 关闭串口。每条1 Hz GNSS记录会立即刷新，网页进程读取独立实时状态文件，不占用
 串口。普通PC命令行用法仍默认立即保存。
 
-关闭 Qt 后，可用 `python tools/check_rtcm_bridge.py COM7 --seconds 40 --bnc <你的私有配置路径>` 验证同一 Qt 转发代码。先停止 BNC 等其他差分注入源。省略 `--bnc` 时只读采集统计，不下发数据。测试不创建 CSV/raw 文件夹，不打印密码或位置坐标；输出接收、转发、丢帧、定位状态与 F9P 反馈，退出码 2 表示带基站测试未满足无丢帧、无错误且 F9P 收到数据的检查条件，不代表一定是串口故障。
+关闭 Qt 后，可用 `python tools/quality_control/check_rtcm_bridge.py COM7 --seconds 40 --bnc <你的私有配置路径>` 验证同一 Qt 转发代码。先停止 BNC 等其他差分注入源。省略 `--bnc` 时只读采集统计，不下发数据。测试不创建 CSV/raw 文件夹，不打印密码或位置坐标；输出接收、转发、丢帧、定位状态与 F9P 反馈，退出码 2 表示带基站测试未满足无丢帧、无错误且 F9P 收到数据的检查条件，不代表一定是串口故障。
 
 在仓库根目录运行：
 
@@ -92,7 +109,7 @@ Qt、树莓派采集器或其他串口程序仍不能同时打开同一个端口
 
 当前电脑实测 USB-TTL 为 COM7：
 
-    D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 12
+    D:\anaconda\envs\allan-toolkit\python.exe tools\acquisition\capture_serial.py COM7 --hours 12
 
 默认波特率为 460800。`--hours 0` 表示持续采集，按 Ctrl+C 会安全关闭文件。与Qt一致，每次采集建立独立会话文件夹，默认生成：
 
@@ -102,13 +119,13 @@ Qt、树莓派采集器或其他串口程序仍不能同时打开同一个端口
 
 只保存指定类型：
 
-    D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --save imu gnss
+    D:\anaconda\envs\allan-toolkit\python.exe tools\acquisition\capture_serial.py COM7 --save imu gnss
 
 `--save imu`、`--save gnss`、`--save rawx` 可任意组合；默认三项全选。同一秒重复启动时会增加 `_01` 后缀，已有数据不会被覆盖。
 
 树莓派GPIO5/RXD2旁路接收F9P UART1时，可增加第二串口参数：
 
-    python3 tools/capture_serial.py /dev/ttyAMA0 --baud 460800 --ubx-port /dev/ttyAMA2 --ubx-baud 115200
+    python3 tools/acquisition/capture_serial.py /dev/ttyAMA0 --baud 460800 --ubx-port /dev/ttyAMA2 --ubx-baud 115200
 
 此时同一会话中额外生成`f9p.ubx`。第二串口线程持续排空接收缓冲，但只有开始
 采集后才落盘；文件按原始二进制字节保存，不进行文本解码或改写。
@@ -124,7 +141,7 @@ Qt、树莓派采集器或其他串口程序仍不能同时打开同一个端口
 
 采集器或 Qt 上位机在采集时已经生成标准物理量IMU CSV，可直接输入：
 
-    D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py data\decoded\20260908180500\imu.csv --rate 100 --skip-minutes 30 --points 90
+    D:\anaconda\envs\allan-toolkit\python.exe tools\noise_analysis\allan_noise_identification.py data\decoded\20260908180500\imu.csv --rate 100 --skip-minutes 30 --points 90
 
 `--rate` 是名义采样率，当前为 100 Hz；`--skip-minutes` 用于跳过预热；`--points` 必须至少为 30。结果包括 Allan 曲线、稳定性曲线、参数 CSV 及中文判读报告。
 
@@ -177,7 +194,7 @@ unix_ms,pps,sample_count,interrupt_count,interrupt_overruns,cc2_overcapture,dt_g
 - `backlog = interrupt_count - sample_count`：允许在 0/1 之间随 `#sync` 与主循环处理 DATA_RDY 的相位关系波动；需要关注的是**是否持续扩大**（如 1,1,2,3,4…），而不是单值是否为 1。
 - 所有累计计数器是 32 位、可回绕，PC 端差分按无符号模 2³² 计算，长期运行也不会误报负数。
 
-`check_sync.py` 只读核对 `sync.csv`：`python tools/check_sync.py <会话目录>/sync.csv`。
+`quality_control/check_sync.py` 只读核对 `sync.csv`：`python tools/quality_control/check_sync.py <会话目录>/sync.csv`。
 
 ## 长时间采集建议
 
@@ -196,22 +213,22 @@ unix_ms,pps,sample_count,interrupt_count,interrupt_overruns,cc2_overcapture,dt_g
 
 ## GM 自相关参数复核
 
-`gm_validate_parameters.m` 对现有GM参数做前后半/四分段、趋势敏感性、独立固定姿态记录和
+`noise_analysis/gm_validate_parameters.m` 对现有GM参数做前后半/四分段、趋势敏感性、独立固定姿态记录和
 30～600秒Allan尺度检验，绘图并输出表格，不覆盖现有GM参数。运行方式、默认独立窗口、
-统计限制及test实际时间/姿态相关Q说明见 [GM_VALIDATION.md](GM_VALIDATION.md)。
+统计限制及test实际时间/姿态相关Q说明见 [GM_VALIDATION.md](noise_analysis/GM_VALIDATION.md)。
 
 ## 位置导出Google Earth KML
 
-`position_to_kml.m` 接收 `[纬度,经度,高度]` 和递增秒时间轴，默认角度为PSINS弧度、
+`visualization/position_to_kml.m` 接收 `[纬度,经度,高度]` 和递增秒时间轴，默认角度为PSINS弧度、
 高度为米，按整数秒插值为严格1 Hz，不外推。输出标准KML轨迹及起终点，无需Mapping Toolbox。
 
 ```matlab
-addpath('tools');
+addpath('tools'); setup_tools;
 [pos_1hz,t_1hz] = position_to_kml(avpL(:,7:9),avpL(:,10),'track_1hz.kml');
 ```
 
 当前 `test.m` 已自动调用，使用每次传播并完成反馈后的天线端位置，而非仅有反馈时刻的日志。
-输出为脚本同级 `kml/combined_navigation_1hz.kml`。在Google Earth中打开该文件即可查看轨迹。
+输出为会话目录中的 `kml/combined_navigation_1hz.kml`。在Google Earth中打开该文件即可查看轨迹。
 默认 `AltitudeMode='clampToGround'` 贴地显示；坐标中仍保留高度。
 若要显示HMSL海拔轨迹，改为 `'absolute'`；椭球高需先转换，不能直接当HMSL使用。
 其他选项：`AngleUnit='deg'`、`SamplePeriod_s`、`Name`、`LineColor`（KML aabbggrr）、`LineWidth`。

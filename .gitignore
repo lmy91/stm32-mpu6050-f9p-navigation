@@ -74,6 +74,12 @@ Thumbs.db
 # WorkBuddy project data (memory, temp scripts) — never commit
 .workbuddy/
 
+# Station download cache, resumable intermediates, and the 1.37 GB daily example.
+.wuh2_pipeline/
+.wuh2_work_*/
+.broadcast-*/
+/data/decoded/20260923104556_电动车2/WUH200CHN_R_*_01D_01S_MO.rnx
+
 # Temporary analysis artifacts
 tools/long_dataset_report.txt
 tools/viz_data.json

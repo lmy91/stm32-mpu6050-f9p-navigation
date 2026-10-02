@@ -1,4 +1,4 @@
-# MPU6050/F9P Capture and Allan Tools
+# MPU6050/F9P Tool Index
 
 On Windows, use `python -X utf8` for analysis tools that print Chinese or superscript units. Use the discover command below for legacy tests with directory-local imports.
 
@@ -8,25 +8,42 @@ These tools match STM32 serial protocol v3 and separately save GPS-timestamped I
 
 ## Tools
 
+Tools were grouped by purpose on 2026-10-02. Run commands from the repository root; dependency lists and the downloader source ZIP remain in `tools/`.
+
+| Folder | Purpose |
+| --- | --- |
+| [acquisition/](acquisition/README.md) | Serial capture, RAWX decoding, F9P polling and Python tests |
+| [quality_control/](quality_control/README.md) | Session quality, synchronization and RTCM checks |
+| [calibration/](calibration/README.md) | Temperature fitting, 24-position calibration and SOP |
+| [noise_analysis/](noise_analysis/README.md) | Allan analysis and GM identification/validation |
+| [repeatability/](repeatability/README.md) | Analysis of manually recorded power cycles |
+| [visualization/](visualization/README.md) | KML export and MATLAB tests |
+| [station_observation_downloader/](station_observation_downloader/README.md) | Qt station observations and broadcast ephemeris downloader |
+| [legacy/](legacy/README.md) | Historical BNC, timing, innovation and plotting helpers |
+
+Initialize MATLAB functions with `addpath('tools'); setup_tools;`. Python commands use the new category paths. The historical Raspberry Pi service in this repository now uses `tools/acquisition/capture_serial.py`; installed copies need the updated service configuration. The separate production repository retains its own update procedure.
+
+The [WUH2 observation downloader](station_observation_downloader/README.md) has a separate Qt interface: double-click `station_observation_downloader/run_gui.bat`. It reads rover RINEX 3 times and downloads the minimum required 15-minute segments by default. Full-day observations and daily mixed broadcast ephemeris have independent optional checkboxes. Results default to the rover folder. Closing the window stops the task and its processing children; valid files are reused on restart. A source ZIP is included at `tools/station_observation_downloader.zip`; Python dependencies and external CRX2RNX/GFZRNX tools are documented in the package README.
+
 | File | Purpose | Default output |
 | --- | --- | --- |
-| `capture_serial.py` | Headless capture of the complete stream | IMU, navigation, and RAWX CSV files in a session folder |
-| `decode_rawx.py` | Validate and summarize RAWX observations | Epoch completeness, signal quality, lock resets, and phase-Doppler outlier candidates |
-| `check_rtcm_bridge.py` | Bounded hardware smoke test using the same Qt forwarding code | Console counters only |
-| `inspect_f9p.py` | Read-only UBX polls over the receiver native USB port | Console summary; `--details` for per-signal data |
-| `allan_noise_identification.py` | Read the canonical IMU CSV and identify Allan noise terms | `data/allan_results/` |
-| `analyze_turn_on_bias.py` | Analyze manually recorded power-cycle sessions: raw-domain TC, fixed calibration, QC and covariance of run means | Experiment `analysis/` directory; [usage](TURN_ON_BIAS.md) |
-| `fit_temp_order_selection.m` | Compare per-axis polynomial orders 1–5; recommendations only | Order-selection MAT/CSV/report/plot |
-| `fit_temp_bias_raw.m` | Raw-domain TC fit; explicit `axisOrder` is authoritative | Coefficient MAT/CSV, full-rate corrected CSV, comparison plots |
-| `calib24_static_numbered_tempcomp.m` | Apply TC before 24-position calibration | Matched calibration MAT/CSV/plots |
-| `calib24_static_numbered.m` | Uncompensated reference calibration, not current replay default | Raw-domain calibration outputs |
-| `run_tempcal_sop.m` | Run order selection, TC fit and calibration | `data/calib24/`; Allan remains a separate Python step |
-| `allan_compare_tc_configs.py` | Raw / TC / TC+calibration Allan comparison | Session result directory; `--help` documents stage/layout options |
-| `check_sync.py` | Read-only sync-counter QC | Console; `python tools/check_sync.py <session>/sync.csv` |
-| `gm_autocorrelation_analysis.m` | Calibrated six-axis ACF; correct 10 s averaging attenuation | Provisional GM parameters, blocks, MAT and plots |
-| `gm_validate_parameters.m` | Segments, detrending, independent records and 30–600 s audit | Separate `gm_validation/`; original GM CSV is untouched |
-| `position_to_kml.m` | Uniformly sampled WGS84 KML, no Mapping Toolbox | KML plus exported positions/time |
-| `tests/test_position_to_kml.m` | XML, units, resampling and edge-case regression | Pass/fail output, isolated temporary files |
+| `acquisition/capture_serial.py` | Headless capture of the complete stream | IMU, navigation, and RAWX CSV files in a session folder |
+| `acquisition/decode_rawx.py` | Validate and summarize RAWX observations | Epoch completeness, signal quality, lock resets, and phase-Doppler outlier candidates |
+| `quality_control/check_rtcm_bridge.py` | Bounded hardware smoke test using the same Qt forwarding code | Console counters only |
+| `acquisition/inspect_f9p.py` | Read-only UBX polls over the receiver native USB port | Console summary; `--details` for per-signal data |
+| `noise_analysis/allan_noise_identification.py` | Read the canonical IMU CSV and identify Allan noise terms | `data/allan_results/` |
+| `repeatability/analyze_turn_on_bias.py` | Analyze manually recorded power-cycle sessions: raw-domain TC, fixed calibration, QC and covariance of run means | Experiment `analysis/` directory; [usage](repeatability/TURN_ON_BIAS.md) |
+| `calibration/fit_temp_order_selection.m` | Compare per-axis polynomial orders 1–5; recommendations only | Order-selection MAT/CSV/report/plot |
+| `calibration/fit_temp_bias_raw.m` | Raw-domain TC fit; explicit `axisOrder` is authoritative | Coefficient MAT/CSV, full-rate corrected CSV, comparison plots |
+| `calibration/calib24_static_numbered_tempcomp.m` | Apply TC before 24-position calibration | Matched calibration MAT/CSV/plots |
+| `calibration/calib24_static_numbered.m` | Uncompensated reference calibration, not current replay default | Raw-domain calibration outputs |
+| `calibration/run_tempcal_sop.m` | Run order selection, TC fit and calibration | `data/calib24/`; Allan remains a separate Python step |
+| `noise_analysis/allan_compare_tc_configs.py` | Raw / TC / TC+calibration Allan comparison | Session result directory; `--help` documents stage/layout options |
+| `quality_control/check_sync.py` | Read-only sync-counter QC | Console; `python tools/quality_control/check_sync.py <session>/sync.csv` |
+| `noise_analysis/gm_autocorrelation_analysis.m` | Calibrated six-axis ACF; correct 10 s averaging attenuation | Provisional GM parameters, blocks, MAT and plots |
+| `noise_analysis/gm_validate_parameters.m` | Segments, detrending, independent records and 30–600 s audit | Separate `gm_validation/`; original GM CSV is untouched |
+| `visualization/position_to_kml.m` | Uniformly sampled WGS84 KML, no Mapping Toolbox | KML plus exported positions/time |
+| `visualization/tests/test_position_to_kml.m` | XML, units, resampling and edge-case regression | Pass/fail output, isolated temporary files |
 
 ## Offline workflow and prerequisites (2026-09-30)
 
@@ -37,13 +54,13 @@ TC, GM and KML tools do not require PSINS. Re-fitting TC or GM needs the exclude
 The included pilot is continuous-power data, not a verified power-cycle covariance.
 
 ```matlab
-addpath('tools');
+addpath('tools'); setup_tools;
 run_tempcal_sop('skipStep1',true); % Frozen TC + published 24-position inputs; overwrites calibration
 % With the long raw recordings restored:
-% run('tools/gm_autocorrelation_analysis.m');
+% run('tools/noise_analysis/gm_autocorrelation_analysis.m');
 % results = gm_validate_parameters;
 gm_validate_parameters(struct('replotOnly',true)); % Included validation MAT only
-addpath('tools/tests'); test_position_to_kml;
+addpath('tools/visualization/tests'); test_position_to_kml;
 [llh1,t1] = position_to_kml(llh_rad,time_s,'track.kml');
 ```
 
@@ -53,12 +70,12 @@ Use `'AngleUnit','deg'` for degree inputs. Default `'AltitudeMode','clampToGroun
 height values but displays a terrain track; `'absolute'` requires sea-level height, not raw ellipsoid height.
 The current replay exports `kml/combined_navigation_1hz.kml` from continuous antenna-position propagation logs.
 
-Auxiliary tools: `analyze_latest_data.py <session>` summarizes a capture; `bnc_direct_proxy.py`
+Auxiliary tools: `quality_control/analyze_latest_data.py <session>` summarizes a capture; `legacy/bnc_direct_proxy.py`
 is only for legacy BNC connections, not normal Qt NTRIP.
-`deep_dive_timing.py`, `innovation_dive.py`, `extract_viz_data.py` and `gen_viz_html.py`
+`legacy/deep_dive_timing.py`, `legacy/innovation_dive.py`, `legacy/extract_viz_data.py` and `legacy/gen_viz_html.py`
 have historical hardcoded paths: inspect/configure them and restore their data before use.
-`python -X utf8 -m unittest discover -s tools -p 'test_*.py'` runs capture/decoder regression.
-See the [TC SOP](../docs/温补标定SOP.md), [GM audit guide](GM_VALIDATION.md) and
+`python -X utf8 -m unittest discover -s tools/acquisition -p 'test_*.py'` runs capture/decoder regression.
+See the [TC SOP](../docs/温补标定SOP.md), [GM audit guide](noise_analysis/GM_VALIDATION.md) and
 [snapshot guide](../docs/版本整理与使用指南_20260930.md). Re-running fitting can overwrite frozen outputs;
 never mix TC coefficients with calibration from a different configuration.
 
@@ -66,9 +83,9 @@ never mix TC coefficients with calibration from a different configuration.
 
 `check_rtcm_bridge.py --seconds 180 --stall-gui` deliberately pauses GUI handling for half a second every ten seconds while the serial thread keeps running. Statistics include reconnects, byte-queue peak, maximum send-queue age, incomplete-MSM drop counters and RTCM MSM headers. MSM epochs retain their constellation time scales: add 14 seconds to BDS for GPST; GLONASS combines day of week and time of day and cannot be directly subtracted from GPS TOW. The printed ECEF position belongs to the reference station, not the rover.
 
-`python tools/inspect_f9p.py COM3` sends only UBX polls, not VALSET, reset or RTCM. Verify the native USB port first; do not substitute the STM32 COM7. A false `config_response_received` means no configuration response was received, not that the settings equal zero.
+`python tools/acquisition/inspect_f9p.py COM3` sends only UBX polls, not VALSET, reset or RTCM. Verify the native USB port first; do not substitute the STM32 COM7. A false `config_response_received` means no configuration response was received, not that the settings equal zero.
 
-`capture_serial.py` remains capture-only in normal PC CLI use. In Raspberry Pi
+`acquisition/capture_serial.py` remains capture-only in normal PC CLI use. In Raspberry Pi
 service mode, explicit `--ntrip-control` enables NTRIP and consumes `#RTCM`
 credit reports inside the sole UART owner. Never open one port in two programs.
 
@@ -78,7 +95,7 @@ but creates the three CSV files only while a volatile control file exists. With
 Stopping recording leaves the UART and live position running. Normal PC CLI use
 still starts recording immediately, and the web process never opens the UART.
 
-After closing Qt and stopping other correction injectors, run `python tools/check_rtcm_bridge.py COM7 --seconds 40 --bnc <private-config-path>` to test the real Qt path. Without `--bnc`, it only reads acquisition statistics. The test writes no files, credentials or coordinates. Exit code 2 means the base-enabled test did not meet error-free, loss-free capture and positive receiver-feedback checks; it is not by itself proof of a UART defect.
+After closing Qt and stopping other correction injectors, run `python tools/quality_control/check_rtcm_bridge.py COM7 --seconds 40 --bnc <private-config-path>` to test the real Qt path. Without `--bnc`, it only reads acquisition statistics. The test writes no files, credentials or coordinates. Exit code 2 means the base-enabled test did not meet error-free, loss-free capture and positive receiver-feedback checks; it is not by itself proof of a UART defect.
 
 Run from the repository root:
 
@@ -90,7 +107,7 @@ Any Python 3.10+ interpreter may be used. The Qt monitor, command-line capture, 
 
 The tested USB-TTL port on the current computer is COM7:
 
-    D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 12
+    D:\anaconda\envs\allan-toolkit\python.exe tools\acquisition\capture_serial.py COM7 --hours 12
 
 The default baud rate is 460800. `--hours 0` runs until Ctrl+C and closes the files safely. Like the Qt monitor, each run creates a session folder containing:
 
@@ -100,13 +117,13 @@ The default baud rate is 460800. `--hours 0` runs until Ctrl+C and closes the fi
 
 Save only selected types:
 
-    D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --save imu gnss
+    D:\anaconda\envs\allan-toolkit\python.exe tools\acquisition\capture_serial.py COM7 --save imu gnss
 
 Any combination of `imu`, `gnss`, and `rawx` is accepted; all three are enabled by default. Runs started within the same second receive an `_01` suffix and never overwrite existing data.
 
 For the Raspberry Pi GPIO5/RXD2 tap of F9P UART1, add the second serial port:
 
-    python3 tools/capture_serial.py /dev/ttyAMA0 --baud 460800 --ubx-port /dev/ttyAMA2 --ubx-baud 115200
+    python3 tools/acquisition/capture_serial.py /dev/ttyAMA0 --baud 460800 --ubx-port /dev/ttyAMA2 --ubx-baud 115200
 
 This creates `f9p.ubx` in the same session. The second reader continuously drains
 the UART but writes bytes only while recording is active; bytes are not decoded or modified.
@@ -123,7 +140,7 @@ The capture tool reports lost IMU frames, invalid lines, and satellite records. 
 
 The capture tool and Qt monitor produce canonical physical-unit IMU CSV files directly:
 
-    D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py data\decoded\20260908180500\imu.csv --rate 100 --skip-minutes 30 --points 90
+    D:\anaconda\envs\allan-toolkit\python.exe tools\noise_analysis\allan_noise_identification.py data\decoded\20260908180500\imu.csv --rate 100 --skip-minutes 30 --points 90
 
 `--rate` is the nominal sampling rate, currently 100 Hz; `--skip-minutes` discards warm-up; `--points` must be at least 30. Results include Allan and stability plots, parameter CSV files, and a Chinese interpretation report.
 

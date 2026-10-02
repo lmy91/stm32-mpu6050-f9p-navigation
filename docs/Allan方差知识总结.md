@@ -588,7 +588,7 @@ Allan方差 → 随机噪声和时变零偏参数
 
 ```powershell
 cd D:\Dr\algorithm\low_cost_gnss_ins
-D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM4 --hours 6
+D:\anaconda\envs\allan-toolkit\python.exe tools\acquisition\capture_serial.py COM4 --hours 6
 ```
 
 当前 `capture_serial.py` 会在接收时直接转换并保存物理量CSV，默认文件为
@@ -597,7 +597,7 @@ D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM4 --hours 6
 分析命令：
 
 ```powershell
-D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py `
+D:\anaconda\envs\allan-toolkit\python.exe tools\noise_analysis\allan_noise_identification.py `
   data\decoded\YYYYMMDDHHMMSS\imu.csv
 ```
 

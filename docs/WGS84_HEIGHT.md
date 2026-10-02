@@ -28,7 +28,7 @@ CSV 原 hmsl_m 位置改成 height_m，不再保存 hmsl_m。网页标签为“W
 
 ## 部署和使用
 
-1. Pi 更新 tools/capture_serial.py、raspberry_pi5/live_dashboard.py 和
+1. Pi 更新 tools/acquisition/capture_serial.py、raspberry_pi5/live_dashboard.py 和
    raspberry_pi5/live_dashboard/index.html。先停止保存，再重启
    gnss-imu-logger.service 与 gnss-imu-dashboard.service。
 2. STM32 烧录 release/mpu6050_f9p_navigation.hex 或 .elf，复位后日志为

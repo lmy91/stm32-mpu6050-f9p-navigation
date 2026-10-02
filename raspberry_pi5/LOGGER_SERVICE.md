@@ -4,7 +4,7 @@
 
 主串口使用树莓派5 GPIO14/15对应的`/dev/ttyAMA0`，参数为460800 bit/s、8N1、
 无流控；F9P原始旁路使用GPIO5/RXD2对应的`/dev/ttyAMA2`，参数为115200 bit/s。
-服务调用`tools/capture_serial.py`并在开机后持续读取两个串口、解码和发布实时位置，
+服务调用`tools/acquisition/capture_serial.py`并在开机后持续读取两个串口、解码和发布实时位置，
 但默认不创建采集文件。输入命令或点击网页“开始采集”后才创建：
 
 ```text
@@ -22,7 +22,7 @@
 
 | 树莓派上的运行文件 | PC项目中的源码副本 | 用途 |
 |---|---|---|
-| `/home/lmy/stm32-mpu6050-f9p-navigation/tools/capture_serial.py` | `tools/capture_serial.py` | 协议v3解码与三类CSV、原始UBX同步采集 |
+| `/home/lmy/stm32-mpu6050-f9p-navigation/tools/acquisition/capture_serial.py` | `tools/acquisition/capture_serial.py` | 协议v3解码与三类CSV、原始UBX同步采集 |
 | `/etc/systemd/system/gnss-imu-logger.service` | `raspberry_pi5/systemd/gnss-imu-logger.service` | 开机实时定位/解码服务，按需保存 |
 | `/usr/local/bin/gnss-imu-status` | `raspberry_pi5/watch_logger_status.sh` | 终端单行刷新采集状态 |
 | `/usr/local/bin/gnss-imu-record-start` | `raspberry_pi5/record_start.sh` | 开始一个新的四文件采集会话 |
@@ -42,7 +42,7 @@
 
 ```powershell
 # PC PowerShell，在项目根目录运行
-Get-FileHash -Algorithm SHA256 tools/capture_serial.py,
+Get-FileHash -Algorithm SHA256 tools/acquisition/capture_serial.py,
   raspberry_pi5/watch_logger_status.sh,
   raspberry_pi5/clear_logger_data.sh,
   raspberry_pi5/systemd/gnss-imu-logger.service
@@ -51,7 +51,7 @@ Get-FileHash -Algorithm SHA256 tools/capture_serial.py,
 ```bash
 # 树莓派
 sha256sum \
-  /home/lmy/stm32-mpu6050-f9p-navigation/tools/capture_serial.py \
+  /home/lmy/stm32-mpu6050-f9p-navigation/tools/acquisition/capture_serial.py \
   /usr/local/bin/gnss-imu-status \
   /usr/local/bin/gnss-imu-record-start \
   /usr/local/bin/gnss-imu-record-stop \

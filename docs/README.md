@@ -24,4 +24,4 @@
 | [本地/GitHub差异检查](本地项目与GitHub版本差异检查.md) | 整理前的只读检查快照，清单不随上传自动更新 |
 | `images/` | 专题文档插图，随相应文档阅读 |
 
-GM与重复性工具的详细操作分别见 [GM_VALIDATION](../tools/GM_VALIDATION.md) 和 [TURN_ON_BIAS](../tools/TURN_ON_BIAS.md)。
+GM与重复性工具的详细操作分别见 [GM_VALIDATION](../tools/noise_analysis/GM_VALIDATION.md) 和 [TURN_ON_BIAS](../tools/repeatability/TURN_ON_BIAS.md)。

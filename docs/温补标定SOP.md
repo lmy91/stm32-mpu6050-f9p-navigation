@@ -45,11 +45,11 @@ g_cal = g_raw − drift_gyr(T) − gb          （单位 deg/h，再按需转 ra
 ## 2. 步骤 ① — 逐轴选阶 + 温补系数矩阵
 
 ```powershell
-& 'D:\MATLAB2025b\bin\matlab.exe' -wait -nosplash -batch "set(groot,'defaultFigureVisible','off'); run('tools/fit_temp_order_selection.m'); run('tools/fit_temp_bias_raw.m');"
+& 'D:\MATLAB2025b\bin\matlab.exe' -wait -nosplash -batch "set(groot,'defaultFigureVisible','off'); run('tools/calibration/fit_temp_order_selection.m'); run('tools/calibration/fit_temp_bias_raw.m');"
 if ($LASTEXITCODE -ne 0) { throw 'step 1 failed' }
 ```
 
-**脚本**：`tools/fit_temp_order_selection.m`（选阶，仅供参考）→ `tools/fit_temp_bias_raw.m`（拟合系数）
+**脚本**：`tools/calibration/fit_temp_order_selection.m`（选阶，仅供参考）→ `tools/calibration/fit_temp_bias_raw.m`（拟合系数）
 
 **配置**（`fit_temp_bias_raw.m` 的 USER CONFIG 区，**唯一权威配置**）：
 
@@ -83,7 +83,7 @@ cfg.decim = 50;  cfg.blockSec = 600;  cfg.maxOrder = 5;
 
 ## 3. 步骤 ② — 按轴温补后进行 24 位置标定
 
-**脚本**：`tools/calib24_static_numbered_tempcomp.m`
+**脚本**：`tools/calibration/calib24_static_numbered_tempcomp.m`
 **配置**（脚本内 USER CONFIG 区）：
 
 ```matlab
@@ -95,7 +95,7 @@ cfg.useZeroOrder = false; % 固定 false：c0 不参与补偿
 有效温补轴由矩阵 `ord>0` 自动派生（并打印核对），未拟合轴整行为 0 → 自动不补偿。
 
 ```powershell
-& 'D:\MATLAB2025b\bin\matlab.exe' -wait -nosplash -batch "set(groot,'defaultFigureVisible','off'); run('tools/calib24_static_numbered_tempcomp.m');"
+& 'D:\MATLAB2025b\bin\matlab.exe' -wait -nosplash -batch "set(groot,'defaultFigureVisible','off'); run('tools/calibration/calib24_static_numbered_tempcomp.m');"
 if ($LASTEXITCODE -ne 0) { throw 'step 2 failed' }
 ```
 
@@ -128,14 +128,14 @@ if ($LASTEXITCODE -ne 0) { throw 'step 2 failed' }
 ## 4. 步骤 ③ — 三方案 Allan 对比
 
 ```powershell
-.\.venv-temp\Scripts\python.exe tools\allan_compare_tc_configs.py `
+.\.venv-temp\Scripts\python.exe tools\noise_analysis\allan_compare_tc_configs.py `
     data\decoded\20260926005735\imu.csv `
     --coeff data\calib24\temp_coeffs_raw.csv `
     --calib data\calib24\calib24_result_tempcomp_azgxgy.mat `
     --enable 0,0,1,1,1,0
 ```
 
-**脚本**：`tools/allan_compare_tc_configs.py`（算法库 `tools/allan_noise_identification.py`）
+**脚本**：`tools/noise_analysis/allan_compare_tc_configs.py`（算法库 `tools/noise_analysis/allan_noise_identification.py`）
 
 **三方案定义**（`--enable` 必须与 `--calib` 的配置一致；本步工具未改，仍用显式开关——其取值应等于步骤① `cfg.axisOrder > 0`，例如 `[0 0 3 5 5 0]` → `0,0,1,1,1,0`）
 
@@ -201,13 +201,13 @@ if ($LASTEXITCODE -ne 0) { throw 'step 2 failed' }
 
 | 文件 | 步骤 |
 | --- | --- |
-| `tools/fit_temp_order_selection.m` | ① 选阶 |
-| `tools/fit_temp_bias_raw.m` | ① 拟合系数 |
-| `tools/calib24_static_numbered_tempcomp.m` | ② 温补 + 24 位置标定 |
-| `tools/allan_compare_tc_configs.py` | ③ 三方案 Allan 对比 |
-| `tools/allan_noise_identification.py` | ③ 算法库（也可单独做噪声辨识） |
+| `tools/calibration/fit_temp_order_selection.m` | ① 选阶 |
+| `tools/calibration/fit_temp_bias_raw.m` | ① 拟合系数 |
+| `tools/calibration/calib24_static_numbered_tempcomp.m` | ② 温补 + 24 位置标定 |
+| `tools/noise_analysis/allan_compare_tc_configs.py` | ③ 三方案 Allan 对比 |
+| `tools/noise_analysis/allan_noise_identification.py` | ③ 算法库（也可单独做噪声辨识） |
 
-**辅助**：`tools/calib24_static_numbered.m`（纯静态标定，即"方案A 无温补"基线/不做温补时的运行时参数）、`tools/run_tempcal_sop.m`（一键跑 ①②）、`tools/requirements_temp_analysis.txt`。
+**辅助**：`tools/calibration/calib24_static_numbered.m`（纯静态标定，即"方案A 无温补"基线/不做温补时的运行时参数）、`tools/calibration/run_tempcal_sop.m`（一键跑 ①②）、`tools/requirements_temp_analysis.txt`。
 
 **已移除**：旧标定域路线与旧 before/after 分析器不再属于正式工具树，历史结果由 Git 版本记录保留。
 

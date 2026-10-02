@@ -38,8 +38,8 @@ F9P 查询：HPG 1.13、PROTVER 27.12，TMODE=0，DGNSSMODE=3，UART1 RTCM 输�
 
 ```powershell
 python -m unittest discover -s host -p 'test*.py'
-python -m unittest discover -s tools -p 'test*.py'
-python tools/check_rtcm_bridge.py COM7 --seconds 45 --stall-gui --require-fixed --bnc <私有配置路径>
+python -m unittest discover -s tools/acquisition -p 'test*.py'
+python tools/quality_control/check_rtcm_bridge.py COM7 --seconds 45 --stall-gui --require-fixed --bnc <私有配置路径>
 ```
 
 `.bnc` 文件含私人凭据，不提交到仓库。诊断工具只打印统计，不写采集文件。F9P 原生 USB 查询与通过 STM32 发送只读查询的使用条件见 tools/README.md。

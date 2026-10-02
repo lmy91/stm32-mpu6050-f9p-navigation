@@ -1,6 +1,6 @@
 # STM32 MPU6050/F9P Integrated Navigation Testbed
 
-## Organized snapshot: 2026-09-30
+## Organized snapshot: 2026-10-02
 
 | Entry | Purpose | Usage |
 | --- | --- | --- |
@@ -9,11 +9,14 @@
 | [fusion](fusion/README_EN.md) | Python live alignment and 15-state loose coupling | Qt controls, `self_aim_config.json` settings |
 | [tools](tools/README_EN.md) | TC/calibration, Allan, GM, repeatability and KML | Documented Python/MATLAB entry points |
 | [data](data/README.md) | Published inputs, frozen parameters and results | E-bike replay included; long raw records excluded |
-| [e-bike replay](data/decoded/20260923104556_电动车2/README.md) | MATLAB/PSINS replay and comparisons | Configure external PSINS, run `test.m`; exports 1 Hz KML |
+| [e-bike replay](data/decoded/20260923104556_电动车2/README.md) | MATLAB/PSINS replay and comparisons | Configure external PSINS, run session `code/navigation/test.m`; exports 1 Hz KML |
+| [WUH2 downloader](tools/station_observation_downloader/README.md) | Minimum segments covering rover times, optional full-day observations and broadcast ephemeris | Double-click `tools/station_observation_downloader/run_gui.bat` |
 | [docs](docs/README.md) | Wiring, timing, processing contracts and limitations | [Snapshot guide](docs/版本整理与使用指南_20260930.md) |
 | [Pi reference](raspberry_pi5/README.md) | Historical/development reference | Production belongs to the separate Pi repository |
 
 Offline MATLAB loads TC/calibration MAT files, current Allan CSV and autocorrelation GM CSV. Live Python uses its own JSON and is not automatically migrated. GM values are provisional, not independently validated model parameters. Historical comparison scripts do not share all current replay changes. Multi-GB raw records, full-rate TC CSVs, credentials, caches and backups remain local. Firmware and the live Python filter are unchanged by this organization update.
+
+The 2026-10-02 update groups session scripts, generated MAT/CSV results and reports into `code/`, `results/` and `docs/`. Matching base observations and daily broadcast ephemeris are included. The 1.37 GB full-day observation file remains local and can be fetched through the optional full-day checkbox. See the [update notes](docs/下载工具与会话目录更新_20261002.md).
 
 
 [中文](README.md) | [English](README_EN.md)
@@ -91,8 +94,8 @@ Choose the PA9 USB-TTL port and 460800 baud. Qt creates one `YYYYMMDDHHMMSS` ses
 Command-line acquisition and analysis:
 
 ```powershell
-D:\anaconda\envs\allan-toolkit\python.exe tools\capture_serial.py COM7 --hours 0
-D:\anaconda\envs\allan-toolkit\python.exe tools\allan_noise_identification.py data\decoded\20260908180500\imu.csv --rate 100 --skip-minutes 30
+D:\anaconda\envs\allan-toolkit\python.exe tools\acquisition\capture_serial.py COM7 --hours 0
+D:\anaconda\envs\allan-toolkit\python.exe tools\noise_analysis\allan_noise_identification.py data\decoded\20260908180500\imu.csv --rate 100 --skip-minutes 30
 ```
 
 See [firmware](firmware/README_EN.md), [desktop application](host/README_EN.md), [tools](tools/README_EN.md), the [fusion roadmap](fusion/README_EN.md), and [known issues and hardening](docs/KNOWN_ISSUES.md) for details.

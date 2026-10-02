@@ -18,6 +18,6 @@
 当前test只从0930参数中读取ARW/VRW白噪声，GM另读自相关CSV。
 实时Python读取JSON数值，不是在启动时自动载入这里的CSV。
 需要重新生成时，先准备与报告一致的数据域/预热截取，
-运行 `python tools/allan_noise_identification.py <IMU路径> --rate 100 --skip-minutes 30`，
+运行 `python tools/noise_analysis/allan_noise_identification.py <IMU路径> --rate 100 --skip-minutes 30`，
 并用 `--help`核对输出目录参数；不要对已温补文件再次温补。
 原始长数据未上传，现有结果可查看但不代表新克隆可直接全流程重算。

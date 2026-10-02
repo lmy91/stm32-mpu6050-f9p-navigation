@@ -1,7 +1,7 @@
 """LAN dashboard and recording control for the Raspberry Pi GNSS/IMU service.
 
 The server deliberately never opens the UART. It reads an atomic live-state
-file published by tools/capture_serial.py, follows recorded GNSS history, and
+file published by tools/acquisition/capture_serial.py, follows recorded GNSS history, and
 toggles recording through a volatile control file.
 """
 
