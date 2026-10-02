@@ -203,7 +203,7 @@ class SerialProtocolTest(unittest.TestCase):
                 self.assertTrue(monitor._open_logs())
             session = pathlib.Path(directory) / "20260910120300"
             metadata = json.loads((session / "session.json").read_text(encoding="utf-8"))
-            self.assertEqual(metadata["serial_protocol"], "v3")
+            self.assertEqual(metadata["serial_protocol"], "v4")
             self.assertEqual(metadata["navigation_frame"], "NED")
             self.assertEqual(metadata["body_frame"], "FRD")
             self.assertEqual(metadata["effective_self_aim_config"]["output_rate_hz"], 7.5)

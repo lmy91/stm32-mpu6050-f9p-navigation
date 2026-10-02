@@ -34,7 +34,7 @@ IMU_COLUMNS = [
 GNSS_COLUMNS = [
     "gps_week", "gps_tow_ms", "time_valid", "rx_timer_us", "fix", "num_sv",
     "flags", "flags2", "carr_soln", "gnss_fix_ok", "diff_soln", "lat_deg", "lon_deg",
-    "hmsl_m", "h_acc_m", "v_acc_m", "vel_n_m_s", "vel_e_m_s", "vel_d_m_s",
+    "height_m", "h_acc_m", "v_acc_m", "vel_n_m_s", "vel_e_m_s", "vel_d_m_s",
     "ground_speed_m_s", "s_acc_m_s", "pdop",
 ]
 RAWX_COLUMNS = [
@@ -225,13 +225,14 @@ def imu_live_sample(row: list[int | float]) -> dict[str, int | float]:
     }
 
 
-def parse_gnss(parts: list[str]) -> list[int | float] | None:
-    if len(parts) != 21 or parts[0] != "GNSS":
+def parse_gnss(parts: list[str]) -> list[int | float | str] | None:
+    """GNSS4 carries WGS84 geodetic height; legacy GNSS has no usable height."""
+    if len(parts) != 21 or parts[0] not in ("GNSS", "GNSS4"):
         return None
     try:
         values = [int(value) for value in parts[1:]]
         (week, tow_ms, valid, rx_timer_us, fix, num_sv, flags, flags2, carr_soln,
-         lat_e7, lon_e7, hmsl_mm, h_acc_mm, v_acc_mm, vel_n, vel_e, vel_d,
+         lat_e7, lon_e7, height_mm, h_acc_mm, v_acc_mm, vel_n, vel_e, vel_d,
          ground, s_acc_mms, pdop_x100) = values
     except ValueError:
         return None
@@ -239,7 +240,8 @@ def parse_gnss(parts: list[str]) -> list[int | float] | None:
     diff_soln = (flags >> 1) & 0x01
     return [
         week, tow_ms, valid, rx_timer_us, fix, num_sv, flags, flags2, carr_soln,
-        gnss_fix_ok, diff_soln, lat_e7 / 1e7, lon_e7 / 1e7, hmsl_mm / 1000.0,
+        gnss_fix_ok, diff_soln, lat_e7 / 1e7, lon_e7 / 1e7,
+        height_mm / 1000.0 if parts[0] == "GNSS4" else "",
         h_acc_mm / 1000.0, v_acc_mm / 1000.0,
         vel_n / 1000.0, vel_e / 1000.0, vel_d / 1000.0,
         ground / 1000.0, s_acc_mms / 1000.0, pdop_x100 / 100.0,
@@ -524,7 +526,7 @@ def main() -> None:
     last_status_imu = 0
     latest_imu: dict[str, int | float] | None = None
     latest_imu_unix_ms: int | None = None
-    latest_gnss: dict[str, int | float] | None = None
+    latest_gnss: dict[str, int | float | str] | None = None
     latest_gnss_unix_ms: int | None = None
     satellite_epoch: list[dict[str, int]] = []
     satellite_epoch_key: tuple[int, int, int] | None = None
@@ -564,7 +566,10 @@ def main() -> None:
     def publish_state(service_active: bool = True) -> None:
         now_unix = time.time()
         write_runtime_state(args.state_file, {
-            "protocol_version": 3,
+            "protocol_version": ((4 if latest_gnss["height_m"] != "" else 3)
+                                 if latest_gnss else None),
+            "supported_protocol_versions": [3, 4],
+            "gnss_height_datum": "WGS84 geodetic height (height_m); blank for v3",
             "service_active": service_active,
             "recording": recorder.active,
             "session": recorder.session_dir.name if recorder.active and recorder.session_dir else None,
@@ -727,7 +732,7 @@ def main() -> None:
                     imu_rows += 1
                     latest_imu = imu_live_sample(row)
                     latest_imu_unix_ms = round(time.time() * 1000)
-                elif parts[0] == "GNSS":
+                elif parts[0] in ("GNSS", "GNSS4"):
                     row = parse_gnss(parts)
                     if row is None:
                         invalid += 1; continue

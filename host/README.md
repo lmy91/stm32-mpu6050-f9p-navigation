@@ -1,3 +1,5 @@
+> 当前GNSS4输出与CSV保存使用WGS84大地高height_m，详见[字段与部署](../docs/WGS84_HEIGHT.md)。旧GNSS记录的大地高留空。
+
 # MPU6050/F9P 组合导航 Qt 上位机
 
 本次离线回归中host共68项，66项通过，2项失败：旧测试期望只生成选择的CSV，而当前实现还始终生成sync.csv。测试与现有记录契约不一致；本次保留并注明，不改GUI实现或掩盖失败。未重新进行串口/RTK硬件验收。
@@ -100,7 +102,7 @@ NTRIP 使用独立线程、直接 TCP、v2 请求，支持 HTTP chunked。帧经
 输入为 STM32 协议v3的 IMU、导航、天空图和RAWX记录；RAWX由历元头、观测行和历元尾组成：
 
     IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
-    GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,hmsl_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
+    GNSS4,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,height_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
     SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used
     RAWX,gps_week,rcv_tow_f64hex,leap_s,rec_stat,num_meas,total_meas,rx_timer_us
     RAWX_MEAS,gnss_id,sv_id,sig_id,freq_id,pr_f64hex,cp_f64hex,do_f32hex,lock_ms,cno,pr_std,cp_std,do_std,trk_stat

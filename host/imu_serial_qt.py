@@ -1056,7 +1056,7 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         self.height_value = QtWidgets.QLabel("-- m"); self.speed_value = QtWidgets.QLabel("-- m/s")
         self.velocity_value = QtWidgets.QLabel("N --  E --  D -- m/s")
         form.addRow("纬度", self.lat_value); form.addRow("经度", self.lon_value)
-        form.addRow("高程", self.height_value); form.addRow("地速", self.speed_value)
+        form.addRow("WGS84大地高", self.height_value); form.addRow("地速", self.speed_value)
         form.addRow("NED速度", self.velocity_value); right_layout.addWidget(position_box)
         self.sky_plot = SkyPlotWidget(); right_layout.addWidget(self.sky_plot, 1); grid.addWidget(right, 0, 2, 2, 1)
         self.speed_graph = pg.PlotWidget(); self.speed_plot = self.speed_graph.getPlotItem()
@@ -1583,7 +1583,7 @@ class NavigationMonitor(QtWidgets.QMainWindow):
                 self.gnss_writer = csv.writer(self.gnss_stream)
                 self.gnss_writer.writerow(["gps_week", "gps_tow_ms", "time_valid", "rx_timer_us", "fix", "num_sv",
                     "flags", "flags2", "carr_soln", "gnss_fix_ok", "diff_soln", "lat_deg", "lon_deg",
-                    "hmsl_m", "h_acc_m", "v_acc_m", "vel_n_m_s", "vel_e_m_s", "vel_d_m_s",
+                    "height_m", "h_acc_m", "v_acc_m", "vel_n_m_s", "vel_e_m_s", "vel_d_m_s",
                     "ground_speed_m_s", "s_acc_m_s", "pdop"])
                 created.append(path.name)
             if "RAWX" in selected:
@@ -1646,7 +1646,9 @@ class NavigationMonitor(QtWidgets.QMainWindow):
                     "schema": "mpu6050-f9p-session-v1",
                     "created_local": QtCore.QDateTime.currentDateTime().toString(
                         QtCore.Qt.ISODateWithMs),
-                    "serial_protocol": "v3",
+                    "serial_protocol": "v4",
+                    "supported_serial_protocols": ["v3", "v4"],
+                    "gnss_height_datum": "WGS84 geodetic height (height_m); blank for v3",
                     "navigation_frame": "NED",
                     "body_frame": "FRD",
                     "selected_outputs": sorted(selected),
@@ -1871,8 +1873,8 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         try:
             if parts[0] == "IMU" and len(parts) == 13:
                 self._process_imu([int(v) for v in parts[1:]])
-            elif parts[0] == "GNSS" and len(parts) == 21:
-                self._process_gnss([int(v) for v in parts[1:]])
+            elif parts[0] in ("GNSS", "GNSS4") and len(parts) == 21:
+                self._process_gnss([int(v) for v in parts[1:]], parts[0] == "GNSS4")
             elif parts[0] == "SAT" and len(parts) == 10:
                 self._process_sat([int(v) for v in parts[1:]])
             elif parts[0] == "SAT_END" and len(parts) == 5:
@@ -1984,9 +1986,9 @@ class NavigationMonitor(QtWidgets.QMainWindow):
                 self._navigation_failed("IMU输入队列已满，未继续使用可能不连续的数据")
         self._trim_buffers()
 
-    def _process_gnss(self, values: list[int]) -> None:
+    def _process_gnss(self, values: list[int], wgs84_height: bool = False) -> None:
         (week, tow_ms, valid, rx_timer_us, fix, num_sv, flags, flags2, carr_soln,
-         lat_e7, lon_e7, hmsl_mm, h_acc_mm, v_acc_mm, vn, ve, vd, ground,
+         lat_e7, lon_e7, height_mm, h_acc_mm, v_acc_mm, vn, ve, vd, ground,
          s_acc_mms, pdop) = values
         gnss_fix_ok = flags & 0x01
         diff_soln = (flags >> 1) & 0x01
@@ -1995,7 +1997,8 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         h_acc_m = h_acc_mm / 1000.0
         v_acc_m = v_acc_mm / 1000.0
         s_acc_m_s = s_acc_mms / 1000.0
-        lat, lon, height = lat_e7 / 1e7, lon_e7 / 1e7, hmsl_mm / 1000.0
+        lat, lon = lat_e7 / 1e7, lon_e7 / 1e7
+        height = height_mm / 1000.0 if wgs84_height else math.nan
         velocities = (vn / 1000.0, ve / 1000.0, vd / 1000.0, ground / 1000.0)
         absolute = week * GPS_WEEK_SECONDS + tow_ms / 1000.0
         if valid:
@@ -2025,7 +2028,9 @@ class NavigationMonitor(QtWidgets.QMainWindow):
             self._logged_fix = state
         self.sv_label.setText(f"卫星数: {num_sv}"); self.pdop_label.setText(f"PDOP: {pdop / 100.0:.2f}")
         self.lat_value.setText(f"{lat:.9f}°"); self.lon_value.setText(f"{lon:.9f}°")
-        self.height_value.setText(f"{height:.3f} m"); self.speed_value.setText(f"{velocities[3]:.3f} m/s")
+        self.height_value.setText(f"{height:.3f} m" if math.isfinite(height)
+                                  else "缺失（需协议v4固件）")
+        self.speed_value.setText(f"{velocities[3]:.3f} m/s")
         self.velocity_value.setText(f"N {velocities[0]:.3f}  E {velocities[1]:.3f}  D {velocities[2]:.3f} m/s")
         if (valid and fix >= 2 and gnss_fix_ok != 0 and
                 abs(lat) <= 90 and abs(lon) <= 180):
@@ -2033,7 +2038,7 @@ class NavigationMonitor(QtWidgets.QMainWindow):
         observation = GnssObservation(
             gps_time_s=absolute, lat_deg=lat, lon_deg=lon, height_m=height,
             velocity_ned_m_s=np.asarray(velocities[:3], dtype=float),
-            valid=bool(valid and fix >= 3 and gnss_fix_ok), hacc_m=h_acc_m,
+            valid=bool(valid and fix >= 3 and gnss_fix_ok and math.isfinite(height)), hacc_m=h_acc_m,
             sacc_m_s=s_acc_m_s, pdop=pdop / 100.0, vacc_m=v_acc_m)
         self.self_aim.update_gnss(observation)
         self._consume_aim_solution(self.self_aim.solution())
@@ -2041,7 +2046,7 @@ class NavigationMonitor(QtWidgets.QMainWindow):
             nav_observation = GnssObservation(
                 gps_time_s=absolute, lat_deg=lat, lon_deg=lon, height_m=height,
                 velocity_ned_m_s=np.asarray(velocities[:3], dtype=float).copy(),
-                valid=bool(valid and fix >= 3 and gnss_fix_ok), hacc_m=h_acc_m,
+                valid=bool(valid and fix >= 3 and gnss_fix_ok and math.isfinite(height)), hacc_m=h_acc_m,
                 sacc_m_s=s_acc_m_s, pdop=pdop / 100.0, vacc_m=v_acc_m)
             if not self.navigation_worker.submit_gnss(nav_observation):
                 self._navigation_failed("GNSS输入队列已满，组合导航停止")
@@ -2049,7 +2054,7 @@ class NavigationMonitor(QtWidgets.QMainWindow):
             self.gnss_writer.writerow([week, tow_ms, valid,
                                        rx_timer_us, fix, num_sv, flags, flags2,
                                        carr_soln, gnss_fix_ok, diff_soln,
-                                       lat, lon, height, h_acc_m, v_acc_m,
+                                       lat, lon, height if math.isfinite(height) else "", h_acc_m, v_acc_m,
                                        velocities[0], velocities[1], velocities[2], velocities[3],
                                        s_acc_m_s, pdop / 100.0])
             self._periodic_flush()

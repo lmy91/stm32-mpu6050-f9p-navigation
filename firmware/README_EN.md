@@ -1,3 +1,5 @@
+> 2026-10-02: Protocol v4 uses GNSS4 and WGS84 geodetic height (height_m in meters); hMSL is no longer saved. Legacy GNSS records have blank height_m. See [output contract](../docs/WGS84_HEIGHT.md).
+
 # MPU6050/F9P Navigation Firmware
 
 ## File map and snapshot scope (2026-09-30)
@@ -98,7 +100,7 @@ Select the ELF in STM32CubeProgrammer, or run this from the repository root:
 After reset, PA9 emits protocol-v3 synchronization, navigation, sky-view, and RAWX records:
 
     IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,ax_raw,ay_raw,az_raw,temp_raw,gx_raw,gy_raw,gz_raw
-    GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,hmsl_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
+    GNSS4,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,lat_e7,lon_e7,height_mm,h_acc_mm,v_acc_mm,vel_n_mms,vel_e_mms,vel_d_mms,g_speed_mms,s_acc_mms,pdop_x100
     SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno_dbhz,elev_deg,azim_deg,used
     SAT_END,gps_week,gps_tow_ms,time_valid,num_svs
     RAWX,gps_week,rcv_tow_f64hex,leap_s,rec_stat,num_meas,total_meas,rx_timer_us

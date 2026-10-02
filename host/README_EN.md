@@ -1,3 +1,5 @@
+> 2026-10-02: Protocol v4 uses GNSS4 and WGS84 geodetic height (height_m in meters); hMSL is no longer saved. Legacy GNSS records have blank height_m. See [output contract](../docs/WGS84_HEIGHT.md).
+
 # MPU6050/F9P Navigation Qt Monitor
 
 Snapshot regression: 66 of 68 host tests passed. Two legacy file-set assertions omit the always-created sync.csv and therefore fail against current behavior. Failures are retained and documented; no GUI behavior or assertions were silently changed. Hardware/RTK acceptance was not rerun.
@@ -96,7 +98,7 @@ System HTTP proxies are bypassed, but VPN TUN/global routes still require a dire
 The input consists of typed records:
 
     IMU,sample,gps_week,gps_tow_us,time_valid,timer_us,...
-    GNSS,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,position,accuracy,velocity,speed_accuracy,pdop
+    GNSS4,gps_week,gps_tow_ms,time_valid,rx_timer_us,fix,num_sv,flags,flags2,carr_soln,position,accuracy,velocity,speed_accuracy,pdop
     SAT,gps_week,gps_tow_ms,time_valid,gnss_id,sv_id,cno,elevation,azimuth,used
     RAWX,gps_week,rcv_tow_f64hex,leap_s,rec_stat,num_meas,total_meas,rx_timer_us
     RAWX_MEAS,gnss_id,sv_id,sig_id,freq_id,pr_f64hex,cp_f64hex,do_f32hex,lock_ms,cno,pr_std,cp_std,do_std,trk_stat
